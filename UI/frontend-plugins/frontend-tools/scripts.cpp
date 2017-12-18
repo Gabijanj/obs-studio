@@ -7,6 +7,8 @@
 #include <obs-frontend-api.h>
 #include <obs-scripting.h>
 
+#include <util/config-file.h>
+
 #include <string>
 
 #include "ui_scripts.h"
@@ -42,6 +44,10 @@ ScriptsTool::ScriptsTool()
 {
 	ui->setupUi(this);
 	RefreshLists();
+
+	config_t *config = obs_frontend_get_global_config();
+	const char *path = config_get_string(config, "Python", "Path");
+	ui->pythonPath->setText(path);
 }
 
 ScriptsTool::~ScriptsTool()
@@ -166,6 +172,25 @@ void ScriptsTool::on_removeLuaDepPath_clicked()
 
 void ScriptsTool::on_pythonPathBrowse_clicked()
 {
+	QString curPath = ui->pythonPath->text();
+	QString newPath = QFileDialog::getExistingDirectory(
+			this,
+			obs_module_text("PythonSettings.PythonInstallPath"),
+			curPath);
+
+	if (newPath.isEmpty())
+		return;
+
+	QByteArray array = newPath.toUtf8();
+	const char *path = array.constData();
+
+	config_t *config = obs_frontend_get_global_config();
+	config_set_string(config, "Python", "Path", path);
+
+	if (obs_scripting_python_loaded())
+		return;
+
+	obs_scripting_load_python(path);
 }
 
 /* ----------------------------------------------------------------- */
@@ -232,7 +257,13 @@ static void save_script_data(obs_data_t *save_data, bool saving, void *)
 
 extern "C" void InitScripts()
 {
+	config_t *config = obs_frontend_get_global_config();
+	const char *python_path = config_get_string(config, "Python", "Path");
+
 	obs_scripting_load();
+
+	if (!obs_scripting_python_loaded() && python_path && *python_path)
+		obs_scripting_load_python(python_path);
 
 	QAction *action = (QAction*)obs_frontend_add_tools_menu_qaction(
 			obs_module_text("Scripts"));

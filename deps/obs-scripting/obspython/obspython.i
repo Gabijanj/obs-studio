@@ -1,4 +1,5 @@
-%module obslua
+%module(threads="1") obspython
+%nothread;
 %{
 #define SWIG_FILE_WITH_INIT
 #define DEPRECATED_START
@@ -14,11 +15,12 @@
 #include <obs-properties.h>
 #include <obs-interaction.h>
 #include <callback/calldata.h>
+#include <callback/decl.h>
 #include <callback/proc.h>
 #include <callback/signal.h>
 #include <util/bmem.h>
 #include <util/base.h>
-#include "cstrcache.h"
+#include "../cstrcache.h"
 #include "obs-scripting-config.h"
 
 #if UI_ENABLED
@@ -72,9 +74,10 @@ static inline void wrap_blog(int log_level, const char *message)
 %include "obs-properties.h"
 %include "obs-interaction.h"
 %include "obs.h"
-%include "callback/calldata.h"
-%include "callback/proc.h"
-%include "callback/signal.h"
+#include "callback/calldata.h"
+#include "callback/decl.h"
+#include "callback/proc.h"
+#include "callback/signal.h"
 %include "util/bmem.h"
 %include "util/base.h"
 %include "obs-scripting-config.h"
@@ -82,3 +85,9 @@ static inline void wrap_blog(int log_level, const char *message)
 #if UI_ENABLED
 %include "obs-frontend-api.h"
 #endif
+
+/* declare these manually because mutex + GIL = deadlocks */
+%thread;
+void obs_enter_graphics(void); //Should only block on entering mutex
+%nothread;
+%include "obs.h"

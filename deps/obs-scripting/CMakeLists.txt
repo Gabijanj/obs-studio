@@ -7,10 +7,16 @@ if(MSVC)
 endif()
 
 find_package(Lua QUIET 5.1)
+find_package(PythonLibs QUIET 3.4)
 find_package(SWIG QUIET 2)
 
 if(NOT SWIG_FOUND)
 	message(STATUS "Scripting: SWIG not found; scripting disabled")
+	return()
+endif()
+
+if(NOT PYTHONLIBS_FOUND AND NOT LUA_FOUND)
+	message(STATUS "Scripting: Neither Python 3 nor Lua was found; scripting plugin disabled")
 	return()
 endif()
 
@@ -19,6 +25,19 @@ if(NOT LUA_FOUND)
 	return()
 else()
 	message(STATUS "Scripting: Lua supported")
+endif()
+
+if(NOT PYTHONLIBS_FOUND)
+	message(STATUS "Scripting: Python 3 not found; Python support disabled")
+	set(PYTHON_FOUND FALSE)
+	set(PYTHONLIBS_FOUND FALSE)
+else()
+	message(STATUS "Scripting: Python 3 supported")
+	set(PYTHON_FOUND TRUE)
+
+	get_filename_component(PYTHON_LIB "${PYTHON_LIBRARIES}" NAME)
+	string(REGEX REPLACE "\\.[^.]*$" "" PYTHON_LIB ${PYTHON_LIB})
+	string(REGEX REPLACE "_d" "" PYTHON_LIB "${PYTHON_LIB}")
 endif()
 
 if(UI_ENABLED)
@@ -35,9 +54,29 @@ include(${SWIG_USE_FILE})
 include_directories(${CMAKE_SOURCE_DIR}/libobs)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
-include_directories(${LUA_INCLUDE_DIR})
+
+if(PYTHONLIBS_FOUND)
+	include_directories(${PYTHON_INCLUDE_DIR})
+
+	set(obs-scripting-python_SOURCES
+		obs-scripting-python.c
+		)
+	set(obs-scripting-python_HEADERS
+		obs-scripting-python.h
+		obs-scripting-python-import.h
+		)
+
+	if(WIN32 OR APPLE)
+		set(obs-scripting-python_SOURCES
+			${obs-scripting-python_SOURCES}
+			obs-scripting-python-import.c
+			)
+	endif()
+endif()
 
 if(LUA_FOUND)
+	include_directories(${LUA_INCLUDE_DIR})
+
 	set(obs-scripting-lua_SOURCES
 		obs-scripting-lua.c
 		obs-scripting-lua-source.c
@@ -65,6 +104,17 @@ set(obs-scripting_HEADERS
 
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/swig)
 
+if(PYTHONLIBS_FOUND)
+	set(SWIG_PY_RUNTIME swig/swigpyrun.h)
+	add_custom_command(OUTPUT ${SWIG_PY_RUNTIME}
+		WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+		PRE_BUILD
+		COMMAND ${SWIG_EXECUTABLE} -python -external-runtime ${SWIG_PY_RUNTIME}
+		COMMENT "Scripting plugin: Building Python SWIG interface header"
+		)
+	set_source_files_properties(${SWIG_PY_RUNTIME} PROPERTIES GENERATED TRUE)
+endif()
+
 if(LUA_FOUND)
 	set(SWIG_LUA_RUNTIME swig/swigluarun.h)
 	add_custom_command(OUTPUT ${SWIG_LUA_RUNTIME}
@@ -79,8 +129,11 @@ endif()
 add_library(obs-scripting SHARED
 	${obs-scripting_SOURCES}
 	${obs-scripting_HEADERS}
+	${obs-scripting-python_SOURCES}
+	${obs-scripting-python_HEADERS}
 	${obs-scripting-lua_SOURCES}
 	${obs-scripting-lua_HEADERS}
+	${SWIG_PY_RUNTIME}
 	${SWIG_LUA_RUNTIME}
 	)
 
@@ -90,6 +143,10 @@ target_link_libraries(obs-scripting
 	${EXTRA_LIBS}
 	${obs-scripting_PLATFORM_DEPS}
 	)
+
+if(PYTHONLIBS_FOUND)
+	add_subdirectory(obspython)
+endif()
 
 if(LUA_FOUND)
 	add_subdirectory(obslua)

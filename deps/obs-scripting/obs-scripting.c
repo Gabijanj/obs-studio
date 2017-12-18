@@ -32,11 +32,23 @@ extern void obs_lua_load(void);
 extern void obs_lua_unload(void);
 #endif
 
+#if COMPILE_PYTHON
+extern obs_script_t *obs_python_script_create(const char *path);
+extern bool obs_python_script_load(obs_script_t *s);
+extern void obs_python_script_unload(obs_script_t *s);
+extern void obs_python_script_destroy(obs_script_t *s);
+extern void obs_python_load(void);
+extern void obs_python_unload(void);
+#endif
+
 static struct dstr file_filter = {0};
 
 static const char *supported_formats[] = {
 #ifdef COMPILE_LUA
 	"lua",
+#endif
+#ifdef COMPILE_PYTHON
+	"py",
 #endif
 	NULL
 };
@@ -47,6 +59,11 @@ bool obs_scripting_load(void)
 	obs_lua_load();
 #endif
 
+#if COMPILE_PYTHON
+	obs_python_load();
+	obs_scripting_load_python(NULL);
+#endif
+
 	return true;
 }
 
@@ -55,6 +72,11 @@ void obs_scripting_unload(void)
 #if COMPILE_LUA
 	obs_lua_unload();
 #endif
+
+#if COMPILE_PYTHON
+	obs_python_unload();
+#endif
+
 	dstr_free(&file_filter);
 }
 
@@ -92,10 +114,16 @@ obs_script_t *obs_script_create(const char *path)
 #if COMPILE_LUA
 	if (strcmp(ext, ".lua") == 0) {
 		script = obs_lua_script_create(path);
-	} else {
-		blog(LOG_WARNING, "Unknown script type: %s", path);
-	}
+	} else
 #endif
+#if COMPILE_PYTHON
+	if (strcmp(ext, ".py") == 0) {
+		script = obs_python_script_create(path);
+	} else
+#endif
+	{
+		blog(LOG_WARNING, "Unsupported/unknown script type: %s", path);
+	}
 
 	return script;
 }
@@ -110,13 +138,22 @@ bool obs_script_reload(obs_script_t *script)
 	if (!ptr_valid(script))
 		return false;
 
-	if (script->type == OBS_SCRIPT_LANG_LUA) {
 #if COMPILE_LUA
+	if (script->type == OBS_SCRIPT_LANG_LUA) {
 		obs_lua_script_unload(script);
 		obs_lua_script_load(script);
-#endif
+		goto out;
 	}
+#endif
+#if COMPILE_PYTHON
+	if (script->type == OBS_SCRIPT_LANG_PYTHON) {
+		obs_python_script_unload(script);
+		obs_python_script_load(script);
+		goto out;
+	}
+#endif
 
+out:
 	return script->loaded;
 }
 
@@ -130,10 +167,18 @@ void obs_script_destroy(obs_script_t *script)
 	if (!script)
 		return;
 
-	if (script->type == OBS_SCRIPT_LANG_LUA) {
 #if COMPILE_LUA
+	if (script->type == OBS_SCRIPT_LANG_LUA) {
 		obs_lua_script_unload(script);
 		obs_lua_script_destroy(script);
-#endif
+		return;
 	}
+#endif
+#if COMPILE_PYTHON
+	if (script->type == OBS_SCRIPT_LANG_PYTHON) {
+		obs_python_script_unload(script);
+		obs_python_script_destroy(script);
+		return;
+	}
+#endif
 }
