@@ -99,6 +99,7 @@ set(obs-scripting_SOURCES
 set(obs-scripting_HEADERS
 	${CMAKE_CURRENT_BINARY_DIR}/obs-scripting-config.h
 	obs-scripting.h
+	obs-scripting-callback.h
 	cstrcache.h
 	)
 

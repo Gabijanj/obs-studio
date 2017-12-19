@@ -19,8 +19,10 @@
 #include <obs.h>
 #include <util/dstr.h>
 #include <util/platform.h>
+#include <util/threading.h>
 
 #include "obs-scripting-internal.h"
+#include "obs-scripting-callback.h"
 #include "obs-scripting-config.h"
 
 #if COMPILE_LUA
@@ -41,6 +43,9 @@ extern void obs_python_load(void);
 extern void obs_python_unload(void);
 #endif
 
+pthread_mutex_t detach_mutex;
+struct script_callback *detached_callbacks;
+
 static struct dstr file_filter = {0};
 
 static const char *supported_formats[] = {
@@ -55,6 +60,8 @@ static const char *supported_formats[] = {
 
 bool obs_scripting_load(void)
 {
+	pthread_mutex_init(&detach_mutex, NULL);
+
 #if COMPILE_LUA
 	obs_lua_load();
 #endif
@@ -78,6 +85,20 @@ void obs_scripting_unload(void)
 #endif
 
 	dstr_free(&file_filter);
+
+	/* ---------------------- */
+
+	pthread_mutex_lock(&detach_mutex);
+
+	struct script_callback *cur = detached_callbacks;
+	while (cur) {
+		struct script_callback *next = cur->next;
+		just_free_script_callback(cur);
+		cur = next;
+	}
+
+	pthread_mutex_unlock(&detach_mutex);
+	pthread_mutex_destroy(&detach_mutex);
 }
 
 const char **obs_scripting_supported_formats(void)

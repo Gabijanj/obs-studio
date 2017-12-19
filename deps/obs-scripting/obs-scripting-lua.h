@@ -24,12 +24,12 @@
 #define SWIG_TYPE_TABLE obslua
 #include "swig/swigluarun.h"
 
-#include <callback/calldata.h>
 #include <util/threading.h>
 #include <util/base.h>
 #include <util/bmem.h>
 
 #include "obs-scripting-internal.h"
+#include "obs-scripting-callback.h"
 
 #define do_log(level, format, ...) \
 	blog(level, "[Lua] " format, ##__VA_ARGS__)
@@ -51,7 +51,7 @@ struct obs_lua_script {
 	pthread_mutex_t mutex;
 	lua_State *script;
 
-	struct lua_obs_callback *first_callback;
+	struct script_callback *first_callback;
 
 	int tick;
 	struct obs_lua_script *next_tick;
@@ -91,39 +91,27 @@ static inline void unlock_script_(struct obs_lua_script *data)
 
 /* ------------------------------------------------ */
 
-extern pthread_mutex_t detach_lua_mutex;
-extern struct lua_obs_callback *detached_lua_callbacks;
-
 struct lua_obs_callback {
-	struct lua_obs_callback *next;
-	struct lua_obs_callback **p_prev_next;
+	struct script_callback base;
 
-	struct obs_lua_script *data;
 	lua_State *script;
 	int reg_idx;
-	bool remove;
-	calldata_t extra;
-
-	void (*on_remove)(struct lua_obs_callback *cb);
 };
 
 static inline struct lua_obs_callback *add_lua_obs_callback_extra(
-		lua_State *script, int stack_idx, size_t extra_size)
+		lua_State *script,
+		int stack_idx,
+		size_t extra_size)
 {
-	struct lua_obs_callback *cb = bzalloc(sizeof(*cb) + extra_size);
 	struct obs_lua_script *data = get_obs_script(script);
-
-	struct lua_obs_callback *next = data->first_callback;
-	cb->next = next;
-	cb->p_prev_next = &data->first_callback;
-	if (next) next->p_prev_next = &cb->next;
+	struct lua_obs_callback *cb = add_script_callback(
+			&data->first_callback,
+			(obs_script_t *)data,
+			sizeof(*cb) + extra_size);
 
 	lua_pushvalue(script, stack_idx);
 	cb->reg_idx = luaL_ref(script, LUA_REGISTRYINDEX);
 	cb->script = script;
-	cb->data = data;
-
-	data->first_callback = cb;
 	return cb;
 }
 
@@ -138,6 +126,12 @@ static inline void *lua_obs_callback_extra_data(struct lua_obs_callback *cb)
 	return (void*)&cb[1];
 }
 
+static inline struct obs_lua_script *lua_obs_callback_script(
+		struct lua_obs_callback *cb)
+{
+	return (struct obs_lua_script *)cb->base.script;
+}
+
 static inline struct lua_obs_callback *find_next_lua_obs_callback(
 		lua_State *script, struct lua_obs_callback *cb, int stack_idx)
 {
@@ -145,7 +139,8 @@ static inline struct lua_obs_callback *find_next_lua_obs_callback(
 	lua_getallocf(script, &ud);
 	struct obs_lua_script *data = ud;
 
-	cb = cb ? cb->next : data->first_callback;
+	cb = cb ? (struct lua_obs_callback *)cb->base.next
+		: (struct lua_obs_callback *)data->first_callback;
 
 	while (cb) {
 		lua_rawgeti(script, LUA_REGISTRYINDEX, cb->reg_idx);
@@ -155,7 +150,7 @@ static inline struct lua_obs_callback *find_next_lua_obs_callback(
 		if (match)
 			break;
 
-		cb = cb->next;
+		cb = (struct lua_obs_callback *)cb->base.next;
 	}
 
 	return cb;
@@ -169,43 +164,18 @@ static inline struct lua_obs_callback *find_lua_obs_callback(
 
 static inline void remove_lua_obs_callback(struct lua_obs_callback *cb)
 {
-	cb->remove = true;
-
-	if (cb->on_remove)
-		cb->on_remove(cb);
-
+	remove_script_callback(&cb->base);
 	luaL_unref(cb->script, LUA_REGISTRYINDEX, cb->reg_idx);
-
-	struct lua_obs_callback *next = cb->next;
-	if (next) next->p_prev_next = cb->p_prev_next;
-	*cb->p_prev_next = cb->next;
-
-	pthread_mutex_lock(&detach_lua_mutex);
-	next = detached_lua_callbacks;
-	cb->next = next;
-	if (next) next->p_prev_next = &cb->next;
-	cb->p_prev_next = &detached_lua_callbacks;
-	detached_lua_callbacks = cb;
-	pthread_mutex_unlock(&detach_lua_mutex);
-
-	cb->script = NULL;
 }
 
 static inline void just_free_lua_obs_callback(struct lua_obs_callback *cb)
 {
-	calldata_free(&cb->extra);
-	bfree(cb);
+	just_free_script_callback(&cb->base);
 }
 
 static inline void free_lua_obs_callback(struct lua_obs_callback *cb)
 {
-	pthread_mutex_lock(&detach_lua_mutex);
-	struct lua_obs_callback *next = cb->next;
-	if (next) next->p_prev_next = cb->p_prev_next;
-	*cb->p_prev_next = cb->next;
-	pthread_mutex_unlock(&detach_lua_mutex);
-
-	just_free_lua_obs_callback(cb);
+	free_script_callback(&cb->base);
 }
 
 /* ------------------------------------------------ */
