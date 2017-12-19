@@ -25,6 +25,7 @@
 #include "swig/swigpyrun.h"
 
 #include "obs-scripting-internal.h"
+#include "obs-scripting-callback.h"
 
 #ifdef _WIN32
 #define __func__ __FUNCTION__
@@ -55,7 +56,7 @@ struct obs_python_script {
 
 	PyObject *module;
 
-	struct python_obs_callback *first_callback;
+	struct script_callback *first_callback;
 
 	PyObject *tick;
 	struct obs_python_script *next_tick;
@@ -64,48 +65,51 @@ struct obs_python_script {
 
 /* ------------------------------------------------------------ */
 
-extern pthread_mutex_t detach_python_mutex;
-extern struct python_obs_callback *detached_python_callbacks;
-
 struct python_obs_callback {
-	struct python_obs_callback *next;
-	struct python_obs_callback **p_prev_next;
+	struct script_callback base;
 
-	struct obs_python_script *script;
 	PyObject *func;
-	bool remove;
-	calldata_t extra;
 };
+
+static inline struct python_obs_callback *add_python_obs_callback_extra(
+		struct obs_python_script *script,
+		PyObject *func,
+		size_t extra_size)
+{
+	struct python_obs_callback *cb = add_script_callback(
+			&script->first_callback,
+			(obs_script_t *)script,
+			sizeof(*cb) + extra_size);
+
+	Py_XINCREF(func);
+	cb->func = func;
+	return cb;
+}
 
 static inline struct python_obs_callback *add_python_obs_callback(
 		struct obs_python_script *script,
 		PyObject *func)
 {
-	struct python_obs_callback *cb = bzalloc(sizeof(*cb));
+	return add_python_obs_callback_extra(script, func, 0);
+}
 
-	Py_XINCREF(func);
-	cb->func = func;
-	cb->script = script;
-
-	struct python_obs_callback *next = script->first_callback;
-	cb->next = next;
-	cb->p_prev_next = &script->first_callback;
-	if (next) next->p_prev_next = &cb->next;
-	script->first_callback = cb;
-
-	return cb;
+static inline void *python_obs_callback_extra_data(
+		struct python_obs_callback *cb)
+{
+	return (void*)&cb[1];
 }
 
 static inline struct python_obs_callback *find_next_python_obs_callback(
 		struct obs_python_script *script,
 		struct python_obs_callback *cb, PyObject *func)
 {
-	cb = cb ? cb->next : script->first_callback;
+	cb = cb ? (struct python_obs_callback *)cb->base.next
+		: (struct python_obs_callback *)script->first_callback;
 
 	while (cb) {
 		if (cb->func == func)
 			break;
-		cb = cb->next;
+		cb = (struct python_obs_callback *)cb->base.next;
 	}
 
 	return cb;
@@ -120,38 +124,20 @@ static inline struct python_obs_callback *find_python_obs_callback(
 
 static inline void remove_python_obs_callback(struct python_obs_callback *cb)
 {
-	cb->remove = true;
+	remove_script_callback(&cb->base);
+
 	Py_XDECREF(cb->func);
 	cb->func = NULL;
-
-	struct python_obs_callback *next = cb->next;
-	if (next) next->p_prev_next = cb->p_prev_next;
-	*cb->p_prev_next = cb->next;
-
-	pthread_mutex_lock(&detach_python_mutex);
-	next = detached_python_callbacks;
-	cb->next = next;
-	if (next) next->p_prev_next = &cb->next;
-	cb->p_prev_next = &detached_python_callbacks;
-	detached_python_callbacks = cb;
-	pthread_mutex_unlock(&detach_python_mutex);
 }
 
 static inline void just_free_python_obs_callback(struct python_obs_callback *cb)
 {
-	calldata_free(&cb->extra);
-	bfree(cb);
+	just_free_script_callback(&cb->base);
 }
 
 static inline void free_python_obs_callback(struct python_obs_callback *cb)
 {
-	pthread_mutex_lock(&detach_python_mutex);
-	struct python_obs_callback *next = cb->next;
-	if (next) next->p_prev_next = cb->p_prev_next;
-	*cb->p_prev_next = cb->next;
-	pthread_mutex_unlock(&detach_python_mutex);
-
-	just_free_python_obs_callback(cb);
+	free_script_callback(&cb->base);
 }
 
 /* ------------------------------------------------------------ */

@@ -59,9 +59,6 @@ static bool python_loaded = false;
 static pthread_mutex_t tick_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct obs_python_script *first_tick_script = NULL;
 
-pthread_mutex_t detach_python_mutex = PTHREAD_MUTEX_INITIALIZER;
-struct python_obs_callback *detached_python_callbacks = NULL;
-
 static PyObject *py_obspython = NULL;
 static struct obs_python_script *cur_python_script = NULL;
 static struct python_obs_callback *signal_current_cb = NULL;
@@ -339,17 +336,16 @@ fail:
 static void obs_python_tick_callback(void *priv, float seconds)
 {
 	struct python_obs_callback *cb = priv;
-	bool call_again = false;
 
-	if (cb->remove)
+	if (cb->base.removed) {
 		obs_remove_tick_callback(obs_python_tick_callback, cb);
+		return;
+	}
 
 	lock_python();
 
-	if (cb->remove) {
-		remove_python_obs_callback(cb);
-	} else {
-		cur_python_script = cb->script;
+	if (!cb->base.removed) {
+		cur_python_script = (struct obs_python_script *)cb->base.script;
 
 		PyObject *args = Py_BuildValue("(f)", seconds);
 
@@ -358,15 +354,9 @@ static void obs_python_tick_callback(void *priv, float seconds)
 		Py_XDECREF(args);
 
 		cur_python_script = NULL;
-
-		if (cb->remove)
-			call_again = true;
 	}
 
 	unlock_python();
-
-	if (call_again)
-		obs_python_tick_callback(priv, seconds);
 }
 
 static PyObject *obs_python_remove_tick_callback(PyObject *self, PyObject *args)
@@ -421,24 +411,22 @@ static void calldata_signal_callback(void *priv, calldata_t *cd)
 {
 	struct python_obs_callback *cb = priv;
 	struct python_obs_callback *last_current = signal_current_cb;
-	bool call_again = false;
 
-	if (cb->remove)
+	if (cb->base.removed) {
 		signal_handler_remove_current();
-	else
-		signal_current_cb = cb;
+		return;
+	}
 
 	lock_python();
 
-	if (cb->remove) {
-		remove_python_obs_callback(cb);
-	} else {
+	if (!cb->base.removed) {
 		PyObject *py_cd;
 
 		if (libobs_to_py(calldata_t, cd, false, &py_cd)) {
 			PyObject *args = Py_BuildValue("(O)", py_cd);
 
-			cur_python_script = cb->script;
+			cur_python_script =
+				(struct obs_python_script *)cb->base.script;
 
 			PyObject *py_ret = PyObject_CallObject(cb->func, args);
 			Py_XDECREF(py_ret);
@@ -448,18 +436,12 @@ static void calldata_signal_callback(void *priv, calldata_t *cd)
 
 			Py_XDECREF(args);
 			Py_XDECREF(py_cd);
-
-			if (cb->remove)
-				call_again = true;
 		}
 
 		signal_current_cb = last_current;
 	}
 
 	unlock_python();
-
-	if (call_again)
-		calldata_signal_callback(priv, cd);
 }
 
 static PyObject *obs_python_signal_handler_disconnect(
@@ -492,9 +474,9 @@ static PyObject *obs_python_signal_handler_disconnect(
 	struct python_obs_callback *cb = find_python_obs_callback(script, py_cb);
 	while (cb) {
 		signal_handler_t *cb_handler =
-			calldata_ptr(&cb->extra, "handler");
+			calldata_ptr(&cb->base.extra, "handler");
 		const char *cb_signal =
-			calldata_string(&cb->extra, "signal");
+			calldata_string(&cb->base.extra, "signal");
 
 		if (cb_signal &&
 		    strcmp(signal, cb_signal) != 0 &&
@@ -536,8 +518,8 @@ static PyObject *obs_python_signal_handler_connect(
 		return python_none();
 
 	struct python_obs_callback *cb = add_python_obs_callback(script, py_cb);
-	calldata_set_ptr(&cb->extra, "handler", handler);
-	calldata_set_string(&cb->extra, "signal", signal);
+	calldata_set_ptr(&cb->base.extra, "handler", handler);
+	calldata_set_string(&cb->base.extra, "signal", signal);
 	signal_handler_connect(handler, signal, calldata_signal_callback, cb);
 	return python_none();
 }
@@ -549,24 +531,22 @@ static void calldata_signal_callback_global(void *priv, const char *signal,
 {
 	struct python_obs_callback *cb = priv;
 	struct python_obs_callback *last_current = signal_current_cb;
-	bool call_again = false;
 
-	if (cb->remove)
+	if (cb->base.removed) {
 		signal_handler_remove_current();
-	else
-		signal_current_cb = cb;
+		return;
+	}
 
 	lock_python();
 
-	if (cb->remove) {
-		remove_python_obs_callback(cb);
-	} else {
+	if (!cb->base.removed) {
 		PyObject *py_cd;
 
 		if (libobs_to_py(calldata_t, cd, false, &py_cd)) {
 			PyObject *args = Py_BuildValue("(sO)", signal, py_cd);
 
-			cur_python_script = cb->script;
+			cur_python_script =
+				(struct obs_python_script *)cb->base.script;
 
 			PyObject *py_ret = PyObject_CallObject(cb->func, args);
 			Py_XDECREF(py_ret);
@@ -576,18 +556,12 @@ static void calldata_signal_callback_global(void *priv, const char *signal,
 
 			Py_XDECREF(args);
 			Py_XDECREF(py_cd);
-
-			if (cb->remove)
-				call_again = true;
 		}
 
 		signal_current_cb = last_current;
 	}
 
 	unlock_python();
-
-	if (call_again)
-		calldata_signal_callback_global(priv, signal, cd);
 }
 
 static PyObject *obs_python_signal_handler_disconnect_global(
@@ -618,7 +592,7 @@ static PyObject *obs_python_signal_handler_disconnect_global(
 	struct python_obs_callback *cb = find_python_obs_callback(script, py_cb);
 	while (cb) {
 		signal_handler_t *cb_handler =
-			calldata_ptr(&cb->extra, "handler");
+			calldata_ptr(&cb->base.extra, "handler");
 
 		if (handler == cb_handler)
 			break;
@@ -656,7 +630,7 @@ static PyObject *obs_python_signal_handler_connect_global(
 		return python_none();
 
 	struct python_obs_callback *cb = add_python_obs_callback(script, py_cb);
-	calldata_set_ptr(&cb->extra, "handler", handler);
+	calldata_set_ptr(&cb->base.extra, "handler", handler);
 	signal_handler_connect_global(handler,
 			calldata_signal_callback_global, cb);
 	return python_none();
@@ -809,10 +783,10 @@ void obs_python_script_unload(obs_script_t *s)
 	/* ---------------------------- */
 	/* remove all callbacks         */
 
-	struct python_obs_callback *cb = data->first_callback;
+	struct script_callback *cb = data->first_callback;
 	while (cb) {
-		struct python_obs_callback *next = cb->next;
-		remove_python_obs_callback(cb);
+		struct script_callback *next = cb->next;
+		remove_script_callback(cb);
 		cb = next;
 	}
 
@@ -900,7 +874,6 @@ void obs_python_load(void)
 {
 	da_init(python_paths);
 	pthread_mutex_init(&tick_mutex, NULL);
-	pthread_mutex_init(&detach_python_mutex, NULL);
 }
 
 bool obs_scripting_load_python(const char *python_path)
@@ -1003,19 +976,6 @@ out:
 
 void obs_python_unload(void)
 {
-	pthread_mutex_lock(&detach_python_mutex);
-
-	struct python_obs_callback *cur = detached_python_callbacks;
-	while (cur) {
-		struct python_obs_callback *next = cur->next;
-		just_free_python_obs_callback(cur);
-		cur = next;
-	}
-
-	pthread_mutex_unlock(&detach_python_mutex);
-
-	/* ---------------------- */
-
 	if (Py_IsInitialized()) {
 		PyGILState_Ensure();
 
@@ -1032,5 +992,4 @@ void obs_python_unload(void)
 	da_free(python_paths);
 
 	pthread_mutex_destroy(&tick_mutex);
-	pthread_mutex_destroy(&detach_python_mutex);
 }

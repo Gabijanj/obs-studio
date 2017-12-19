@@ -18,6 +18,7 @@
 #pragma once
 
 #include <callback/calldata.h>
+#include <util/threading.h>
 #include <util/bmem.h>
 
 struct script_callback;
