@@ -59,6 +59,7 @@ PyObject *(*Import_PyImport_ImportModule)(const char *name);
 PyObject *(*Import_PyObject_CallFunctionObjArgs)(PyObject *callable, ...);
 PyObject (*Import__Py_NotImplementedStruct);
 PyObject *(*Import_PyExc_TypeError);
+PyObject *(*Import_PyExc_RuntimeError);
 PyObject *(*Import_PyObject_GetAttr)(PyObject *, PyObject *);
 PyObject *(*Import_PyUnicode_FromString)(const char *u);
 PyObject *(*Import_PyDict_GetItemString)(PyObject *dp, const char *key);
@@ -75,6 +76,17 @@ struct _longobject (*Import__Py_TrueStruct);
 void (*Import_PyGILState_Release)(PyGILState_STATE);
 int (*Import_PyList_Append)(PyObject *, PyObject *);
 PyObject *(*Import_PySys_GetObject)(const char *);
+PyObject *(*Import_PyImport_ReloadModule)(PyObject *m);
+PyObject *(*Import_PyObject_GetAttrString)(PyObject *, const char *);
+PyObject *(*Import_PyCapsule_New)(void *pointer, const char *name, PyCapsule_Destructor destructor);
+void *(*Import_PyCapsule_GetPointer)(PyObject *capsule, const char *name);
+int (*Import_PyArg_ParseTuple)(PyObject *, const char *, ...);
+PyTypeObject (*Import_PyFunction_Type);
+int (*Import_PyObject_SetAttr)(PyObject *, PyObject *, PyObject *);
+PyObject *(*Import__PyObject_New)(PyTypeObject *);
+void *(*Import_PyCapsule_Import)(const char *name, int no_block); 
+void (*Import_PyErr_Clear)(void);
+PyObject *(*Import_PyObject_Call)(PyObject *callable_object, PyObject *args, PyObject *kwargs);
 
 #ifdef _WIN32
 #define SO_EXT ".dll"
@@ -148,6 +160,7 @@ bool import_python(const char *python_path)
 	IMPORT_FUNC(PyObject_CallFunctionObjArgs);
 	IMPORT_FUNC(_Py_NotImplementedStruct);
 	IMPORT_FUNC(PyExc_TypeError);
+	IMPORT_FUNC(PyExc_RuntimeError);
 	IMPORT_FUNC(PyObject_GetAttr);
 	IMPORT_FUNC(PyUnicode_FromString);
 	IMPORT_FUNC(PyDict_GetItemString);
@@ -164,6 +177,17 @@ bool import_python(const char *python_path)
 	IMPORT_FUNC(PyGILState_Release);
 	IMPORT_FUNC(PyList_Append);
 	IMPORT_FUNC(PySys_GetObject);
+	IMPORT_FUNC(PyImport_ReloadModule);
+	IMPORT_FUNC(PyObject_GetAttrString);
+	IMPORT_FUNC(PyCapsule_New);
+	IMPORT_FUNC(PyCapsule_GetPointer);
+	IMPORT_FUNC(PyArg_ParseTuple);
+	IMPORT_FUNC(PyFunction_Type);
+	IMPORT_FUNC(PyObject_SetAttr);
+	IMPORT_FUNC(_PyObject_New);
+	IMPORT_FUNC(PyCapsule_Import);
+	IMPORT_FUNC(PyErr_Clear);
+	IMPORT_FUNC(PyObject_Call);
 
 #undef IMPORT_FUNC
 

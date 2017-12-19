@@ -49,8 +49,9 @@ struct obs_lua_script {
 	struct dstr file;
 
 	pthread_mutex_t mutex;
-	struct lua_obs_callback *first_callback;
 	lua_State *script;
+
+	struct lua_obs_callback *first_callback;
 
 	int tick;
 	struct obs_lua_script *next_tick;
@@ -97,16 +98,19 @@ struct lua_obs_callback {
 	struct lua_obs_callback *next;
 	struct lua_obs_callback **p_prev_next;
 
+	struct obs_lua_script *data;
 	lua_State *script;
 	int reg_idx;
 	bool remove;
 	calldata_t extra;
+
+	void (*on_remove)(struct lua_obs_callback *cb);
 };
 
-static inline struct lua_obs_callback *add_lua_obs_callback(
-		lua_State *script, int stack_idx)
+static inline struct lua_obs_callback *add_lua_obs_callback_extra(
+		lua_State *script, int stack_idx, size_t extra_size)
 {
-	struct lua_obs_callback *cb = bzalloc(sizeof(*cb));
+	struct lua_obs_callback *cb = bzalloc(sizeof(*cb) + extra_size);
 	struct obs_lua_script *data = get_obs_script(script);
 
 	struct lua_obs_callback *next = data->first_callback;
@@ -117,10 +121,21 @@ static inline struct lua_obs_callback *add_lua_obs_callback(
 	lua_pushvalue(script, stack_idx);
 	cb->reg_idx = luaL_ref(script, LUA_REGISTRYINDEX);
 	cb->script = script;
-	cb->remove = false;
+	cb->data = data;
 
 	data->first_callback = cb;
 	return cb;
+}
+
+static inline struct lua_obs_callback *add_lua_obs_callback(
+		lua_State *script, int stack_idx)
+{
+	return add_lua_obs_callback_extra(script, stack_idx, 0);
+}
+
+static inline void *lua_obs_callback_extra_data(struct lua_obs_callback *cb)
+{
+	return (void*)&cb[1];
 }
 
 static inline struct lua_obs_callback *find_next_lua_obs_callback(
@@ -155,6 +170,10 @@ static inline struct lua_obs_callback *find_lua_obs_callback(
 static inline void remove_lua_obs_callback(struct lua_obs_callback *cb)
 {
 	cb->remove = true;
+
+	if (cb->on_remove)
+		cb->on_remove(cb);
+
 	luaL_unref(cb->script, LUA_REGISTRYINDEX, cb->reg_idx);
 
 	struct lua_obs_callback *next = cb->next;

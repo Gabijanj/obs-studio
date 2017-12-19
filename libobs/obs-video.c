@@ -38,16 +38,8 @@ static uint64_t tick_sources(uint64_t cur_time, uint64_t last_time)
 	delta_time = cur_time - last_time;
 	seconds = (float)((double)delta_time / 1000000000.0);
 
-	pthread_mutex_lock(&data->sources_mutex);
-
-	/* call the tick function of each source */
-	source = data->first_source;
-	while (source) {
-		obs_source_video_tick(source, seconds);
-		source = (struct obs_source*)source->context.next;
-	}
-
-	pthread_mutex_unlock(&data->sources_mutex);
+	/* ------------------------------------- */
+	/* call tick callbacks                   */
 
 	pthread_mutex_lock(&obs->data.draw_callbacks_mutex);
 
@@ -58,6 +50,19 @@ static uint64_t tick_sources(uint64_t cur_time, uint64_t last_time)
 	}
 
 	pthread_mutex_unlock(&obs->data.draw_callbacks_mutex);
+
+	/* ------------------------------------- */
+	/* call the tick function of each source */
+
+	pthread_mutex_lock(&data->sources_mutex);
+
+	source = data->first_source;
+	while (source) {
+		obs_source_video_tick(source, seconds);
+		source = (struct obs_source*)source->context.next;
+	}
+
+	pthread_mutex_unlock(&data->sources_mutex);
 
 	return cur_time;
 }

@@ -56,9 +56,100 @@ static wchar_t home_path[1024] = {0};
 DARRAY(char*) python_paths;
 static bool python_loaded = false;
 
+static pthread_mutex_t tick_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct obs_python_script *first_tick_script = NULL;
+
+pthread_mutex_t detach_python_mutex = PTHREAD_MUTEX_INITIALIZER;
+struct python_obs_callback *detached_python_callbacks = NULL;
+
+static PyObject *py_obspython = NULL;
+static struct obs_python_script *cur_python_script = NULL;
+static struct python_obs_callback *signal_current_cb = NULL;
+
+/* -------------------------------------------- */
+
+bool py_to_libobs_(const char *type,
+                   PyObject *  py_in,
+                   void *      libobs_out,
+                   const char *id,
+                   const char *func,
+                   int         line)
+{
+	swig_type_info *info = SWIG_TypeQuery(type);
+	if (info == NULL) {
+		warn("%s:%d: SWIG could not find type: %s%s%s",
+		     func,
+		     line,
+		     id ? id : "",
+		     id ? "::" : "",
+		     type);
+		return false;
+	}
+
+	int ret = SWIG_ConvertPtr(py_in, libobs_out, info, 0);
+	if (!SWIG_IsOK(ret)) {
+		warn("%s:%d: SWIG failed to convert python object to obs "
+		     "object: %s%s%s",
+		     func,
+		     line,
+		     id ? id : "",
+		     id ? "::" : "",
+		     type);
+		return false;
+	}
+
+	return true;
+}
+
+bool libobs_to_py_(const char *type,
+                   void *      libobs_in,
+                   bool        ownership,
+                   PyObject ** py_out,
+                   const char *id,
+                   const char *func,
+                   int         line)
+{
+	swig_type_info *info = SWIG_TypeQuery(type);
+	if (info == NULL) {
+		warn("%s:%d: SWIG could not find type: %s%s%s",
+		     func,
+		     line,
+		     id ? id : "",
+		     id ? "::" : "",
+		     type);
+		return false;
+	}
+
+	*py_out = SWIG_NewPointerObj(libobs_in, info, (int)ownership);
+	if (*py_out == Py_None) {
+		warn("%s:%d: SWIG failed to convert obs object to python "
+		     "object: %s%s%s",
+		     func,
+		     line,
+		     id ? id : "",
+		     id ? "::" : "",
+		     type);
+		return false;
+	}
+
+	return true;
+}
+
 #define libobs_to_py(type, obs_obj, ownership, py_obj) \
 	libobs_to_py_(#type " *", obs_obj, ownership, py_obj, \
 			NULL, __func__, __LINE__)
+#define py_to_libobs(type, py_obj, libobs_out) \
+	py_to_libobs_(#type " *", py_obj, libobs_out, \
+			NULL, __func__, __LINE__)
+
+/* -------------------------------------------- */
+
+static inline PyObject *python_none(void)
+{
+	PyObject *none = Py_None;
+	Py_INCREF(none);
+	return none;
+}
 
 /* ========================================================================= */
 
@@ -83,8 +174,6 @@ static void add_functions_to_py_module(PyObject *module,
 
 /* -------------------------------------------- */
 
-PyObject *py_obspython = NULL;
-
 static PyObject *py_get_current_script_path(PyObject *self, PyObject *args)
 {
 	UNUSED_PARAMETER(args);
@@ -92,17 +181,29 @@ static PyObject *py_get_current_script_path(PyObject *self, PyObject *args)
 			"__script_dir__");
 }
 
-static void load_python_script(struct obs_python_script *data)
+static bool load_python_script(struct obs_python_script *data)
 {
 	PyObject *py_file     = NULL;
 	PyObject *py_module   = NULL;
 	PyObject *py_success  = NULL;
+	PyObject *py_tick     = NULL;
+	PyObject *py_load     = NULL;
+	bool      success     = false;
 	int       ret;
 
-	py_file   = PyUnicode_FromString(data->file.array);
-	py_module = PyImport_Import(py_file);
-	if (py_error() || !py_module)
+	cur_python_script = data;
+
+	if (!data->module) {
+		py_file   = PyUnicode_FromString(data->file.array);
+		py_module = PyImport_Import(py_file);
+	} else {
+		py_module = PyImport_ReloadModule(data->module);
+	}
+
+	if (!py_module) {
+		py_error();
 		goto fail;
+	}
 
 	Py_XINCREF(py_obspython);
 	ret = PyModule_AddObject(py_module, "obspython", py_obspython);
@@ -114,7 +215,12 @@ static void load_python_script(struct obs_python_script *data)
 	if (py_error() || ret != 0)
 		goto fail;
 
-	PyMethodDef global_funcs[] = {
+	PyObject *py_data = PyCapsule_New(data, NULL, NULL);
+	ret = PyModule_AddObject(py_module, "__script_data__", py_data);
+	if (py_error() || ret != 0)
+		goto fail;
+
+	static PyMethodDef global_funcs[] = {
 		{"get_script_path",
 		 py_get_current_script_path,
 		 METH_NOARGS,
@@ -124,22 +230,62 @@ static void load_python_script(struct obs_python_script *data)
 
 	add_functions_to_py_module(py_module, global_funcs);
 
+	py_tick = PyObject_GetAttrString(py_module, "script_tick");
+	if (py_tick) {
+		pthread_mutex_lock(&tick_mutex);
+
+		struct obs_python_script *next = first_tick_script;
+		data->next_tick = next;
+		data->p_prev_next_tick = &first_tick_script;
+		if (next) next->p_prev_next_tick = &data->next_tick;
+		first_tick_script = data;
+
+		data->tick = py_tick;
+		py_tick = NULL;
+
+		pthread_mutex_unlock(&tick_mutex);
+	}
+
+	py_load = PyObject_GetAttrString(py_module, "script_load");
+	if (py_load) {
+		PyObject *py_ret = PyObject_CallObject(py_load, NULL);
+		py_error();
+		Py_XDECREF(py_ret);
+	} else {
+		PyErr_Clear();
+	}
+
+	if (data->module)
+		Py_XDECREF(data->module);
+	data->module = py_module;
+	py_module = NULL;
+
+	success = true;
+
 fail:
+	Py_XDECREF(py_load);
+	Py_XDECREF(py_tick);
 	Py_XDECREF(py_success);
-	Py_XDECREF(py_module);
 	Py_XDECREF(py_file);
+	if (!success)
+		Py_XDECREF(py_module);
+	cur_python_script = NULL;
+	return success;
 }
 
-static void unload_python_script(PyObject *py_module)
+static void unload_python_script(struct obs_python_script *data)
 {
-	PyObject *py_funcname = NULL;
+	PyObject *py_module   = data->module;
 	PyObject *py_func     = NULL;
 	PyObject *py_ret      = NULL;
 
-	py_funcname = PyUnicode_FromString("script_unload");
-	py_func     = PyObject_GetAttr(py_module, py_funcname);
-	if (PyErr_Occurred() || !py_func)
+	cur_python_script = data;
+
+	py_func = PyObject_GetAttrString(py_module, "script_unload");
+	if (PyErr_Occurred() || !py_func) {
+		PyErr_Clear();
 		goto fail;
+	}
 
 	py_ret = PyObject_CallObject(py_func, NULL);
 	if (py_error())
@@ -148,8 +294,8 @@ static void unload_python_script(PyObject *py_module)
 fail:
 	Py_XDECREF(py_ret);
 	Py_XDECREF(py_func);
-	Py_XDECREF(py_funcname);
-	Py_XDECREF(py_module);
+
+	cur_python_script = NULL;
 }
 
 static void add_to_python_path(const char *path)
@@ -190,11 +336,410 @@ fail:
 
 /* -------------------------------------------- */
 
+static void obs_python_tick_callback(void *priv, float seconds)
+{
+	struct python_obs_callback *cb = priv;
+	bool call_again = false;
+
+	if (cb->remove)
+		obs_remove_tick_callback(obs_python_tick_callback, cb);
+
+	lock_python();
+
+	if (cb->remove) {
+		remove_python_obs_callback(cb);
+	} else {
+		cur_python_script = cb->script;
+
+		PyObject *args = Py_BuildValue("(f)", seconds);
+
+		PyObject *py_ret = PyObject_CallObject(cb->func, NULL);
+		Py_XDECREF(py_ret);
+		Py_XDECREF(args);
+
+		cur_python_script = NULL;
+
+		if (cb->remove)
+			call_again = true;
+	}
+
+	unlock_python();
+
+	if (call_again)
+		obs_python_tick_callback(priv, seconds);
+}
+
+static PyObject *obs_python_remove_tick_callback(PyObject *self, PyObject *args)
+{
+	struct obs_python_script *script = cur_python_script;
+	PyObject *py_cb = NULL;
+
+	if (!script) {
+		PyErr_SetString(PyExc_RuntimeError,
+				"No active script, report this to Jim");
+		return NULL;
+	}
+
+	UNUSED_PARAMETER(self);
+
+	if (!PyArg_ParseTuple(args, "O:" __FUNCTION__, &py_cb))
+		return python_none();
+	if (!py_cb || !PyFunction_Check(py_cb))
+		return python_none();
+
+	struct python_obs_callback *cb = find_python_obs_callback(script, py_cb);
+	if (cb) remove_python_obs_callback(cb);
+	return python_none();
+}
+
+static PyObject *obs_python_add_tick_callback(PyObject *self, PyObject *args)
+{
+	struct obs_python_script *script = cur_python_script;
+	PyObject *py_cb = NULL;
+
+	if (!script) {
+		PyErr_SetString(PyExc_RuntimeError,
+				"No active script, report this to Jim");
+		return NULL;
+	}
+
+	UNUSED_PARAMETER(self);
+
+	if (!PyArg_ParseTuple(args, "O:" __FUNCTION__, &py_cb))
+		return python_none();
+	if (!py_cb || !PyFunction_Check(py_cb))
+		return python_none();
+
+	struct python_obs_callback *cb = add_python_obs_callback(script, py_cb);
+	obs_add_tick_callback(obs_python_tick_callback, cb);
+	return python_none();
+}
+
+/* -------------------------------------------- */
+
+static void calldata_signal_callback(void *priv, calldata_t *cd)
+{
+	struct python_obs_callback *cb = priv;
+	struct python_obs_callback *last_current = signal_current_cb;
+	bool call_again = false;
+
+	if (cb->remove)
+		signal_handler_remove_current();
+	else
+		signal_current_cb = cb;
+
+	lock_python();
+
+	if (cb->remove) {
+		remove_python_obs_callback(cb);
+	} else {
+		PyObject *py_cd;
+
+		if (libobs_to_py(calldata_t, cd, false, &py_cd)) {
+			PyObject *args = Py_BuildValue("(O)", py_cd);
+
+			cur_python_script = cb->script;
+
+			PyObject *py_ret = PyObject_CallObject(cb->func, args);
+			Py_XDECREF(py_ret);
+			py_error();
+
+			cur_python_script = NULL;
+
+			Py_XDECREF(args);
+			Py_XDECREF(py_cd);
+
+			if (cb->remove)
+				call_again = true;
+		}
+
+		signal_current_cb = last_current;
+	}
+
+	unlock_python();
+
+	if (call_again)
+		calldata_signal_callback(priv, cd);
+}
+
+static PyObject *obs_python_signal_handler_disconnect(
+		PyObject *self, PyObject *args)
+{
+	struct obs_python_script *script = cur_python_script;
+	PyObject *py_sh = NULL;
+	PyObject *py_cb = NULL;
+	const char *signal;
+
+	if (!script) {
+		PyErr_SetString(PyExc_RuntimeError,
+				"No active script, report this to Jim");
+		return NULL;
+	}
+
+	UNUSED_PARAMETER(self);
+
+	signal_handler_t *handler;
+
+	if (!PyArg_ParseTuple(args, "OsO:" __FUNCTION__, &py_sh, &signal,
+				&py_cb))
+		return python_none();
+
+	if (!py_to_libobs(signal_handler_t, py_sh, &handler))
+		return python_none();
+	if (!py_cb || !PyFunction_Check(py_cb))
+		return python_none();
+
+	struct python_obs_callback *cb = find_python_obs_callback(script, py_cb);
+	while (cb) {
+		signal_handler_t *cb_handler =
+			calldata_ptr(&cb->extra, "handler");
+		const char *cb_signal =
+			calldata_string(&cb->extra, "signal");
+
+		if (cb_signal &&
+		    strcmp(signal, cb_signal) != 0 &&
+		    handler == cb_handler)
+			break;
+
+		cb = find_next_python_obs_callback(script, cb, py_cb);
+	}
+
+	if (cb) remove_python_obs_callback(cb);
+	return python_none();
+}
+
+static PyObject *obs_python_signal_handler_connect(
+		PyObject *self, PyObject *args)
+{
+	struct obs_python_script *script = cur_python_script;
+	PyObject *py_sh = NULL;
+	PyObject *py_cb = NULL;
+	const char *signal;
+
+	if (!script) {
+		PyErr_SetString(PyExc_RuntimeError,
+				"No active script, report this to Jim");
+		return NULL;
+	}
+
+	UNUSED_PARAMETER(self);
+
+	signal_handler_t *handler;
+
+	if (!PyArg_ParseTuple(args, "OsO:" __FUNCTION__, &py_sh, &signal,
+				&py_cb))
+		return python_none();
+
+	if (!py_to_libobs(signal_handler_t, py_sh, &handler))
+		return python_none();
+	if (!py_cb || !PyFunction_Check(py_cb))
+		return python_none();
+
+	struct python_obs_callback *cb = add_python_obs_callback(script, py_cb);
+	calldata_set_ptr(&cb->extra, "handler", handler);
+	calldata_set_string(&cb->extra, "signal", signal);
+	signal_handler_connect(handler, signal, calldata_signal_callback, cb);
+	return python_none();
+}
+
+/* -------------------------------------------- */
+
+static void calldata_signal_callback_global(void *priv, const char *signal,
+		calldata_t *cd)
+{
+	struct python_obs_callback *cb = priv;
+	struct python_obs_callback *last_current = signal_current_cb;
+	bool call_again = false;
+
+	if (cb->remove)
+		signal_handler_remove_current();
+	else
+		signal_current_cb = cb;
+
+	lock_python();
+
+	if (cb->remove) {
+		remove_python_obs_callback(cb);
+	} else {
+		PyObject *py_cd;
+
+		if (libobs_to_py(calldata_t, cd, false, &py_cd)) {
+			PyObject *args = Py_BuildValue("(sO)", signal, py_cd);
+
+			cur_python_script = cb->script;
+
+			PyObject *py_ret = PyObject_CallObject(cb->func, args);
+			Py_XDECREF(py_ret);
+			py_error();
+
+			cur_python_script = NULL;
+
+			Py_XDECREF(args);
+			Py_XDECREF(py_cd);
+
+			if (cb->remove)
+				call_again = true;
+		}
+
+		signal_current_cb = last_current;
+	}
+
+	unlock_python();
+
+	if (call_again)
+		calldata_signal_callback_global(priv, signal, cd);
+}
+
+static PyObject *obs_python_signal_handler_disconnect_global(
+		PyObject *self, PyObject *args)
+{
+	struct obs_python_script *script = cur_python_script;
+	PyObject *py_sh = NULL;
+	PyObject *py_cb = NULL;
+
+	if (!script) {
+		PyErr_SetString(PyExc_RuntimeError,
+				"No active script, report this to Jim");
+		return NULL;
+	}
+
+	UNUSED_PARAMETER(self);
+
+	signal_handler_t *handler;
+
+	if (!PyArg_ParseTuple(args, "OO:" __FUNCTION__, &py_sh, &py_cb))
+		return python_none();
+
+	if (!py_to_libobs(signal_handler_t, py_sh, &handler))
+		return python_none();
+	if (!py_cb || !PyFunction_Check(py_cb))
+		return python_none();
+
+	struct python_obs_callback *cb = find_python_obs_callback(script, py_cb);
+	while (cb) {
+		signal_handler_t *cb_handler =
+			calldata_ptr(&cb->extra, "handler");
+
+		if (handler == cb_handler)
+			break;
+
+		cb = find_next_python_obs_callback(script, cb, py_cb);
+	}
+
+	if (cb) remove_python_obs_callback(cb);
+	return python_none();
+}
+
+static PyObject *obs_python_signal_handler_connect_global(
+		PyObject *self, PyObject *args)
+{
+	struct obs_python_script *script = cur_python_script;
+	PyObject *py_sh = NULL;
+	PyObject *py_cb = NULL;
+
+	if (!script) {
+		PyErr_SetString(PyExc_RuntimeError,
+				"No active script, report this to Jim");
+		return NULL;
+	}
+
+	UNUSED_PARAMETER(self);
+
+	signal_handler_t *handler;
+
+	if (!PyArg_ParseTuple(args, "OO:" __FUNCTION__, &py_sh, &py_cb))
+		return python_none();
+
+	if (!py_to_libobs(signal_handler_t, py_sh, &handler))
+		return python_none();
+	if (!py_cb || !PyFunction_Check(py_cb))
+		return python_none();
+
+	struct python_obs_callback *cb = add_python_obs_callback(script, py_cb);
+	calldata_set_ptr(&cb->extra, "handler", handler);
+	signal_handler_connect_global(handler,
+			calldata_signal_callback_global, cb);
+	return python_none();
+}
+
+/* -------------------------------------------- */
+
+static PyObject *obs_python_signal_handler_remove_current(
+		PyObject *self, PyObject *args)
+{
+	UNUSED_PARAMETER(self);
+	UNUSED_PARAMETER(args);
+
+	if (signal_current_cb)
+		remove_python_obs_callback(signal_current_cb);
+	return python_none();
+}
+
+/* -------------------------------------------- */
+
+static PyObject *calldata_source(PyObject *self, PyObject *args)
+{
+	PyObject *py_ret = NULL;
+	PyObject *py_cd  = NULL;
+
+	calldata_t *cd;
+	const char *name;
+
+	UNUSED_PARAMETER(self);
+
+	if (!PyArg_ParseTuple(args, "Os:calldata_source", &py_cd, &name))
+		goto fail;
+	if (!py_to_libobs(calldata_t, py_cd, &cd))
+		goto fail;
+
+	obs_source_t *source = calldata_ptr(cd, name);
+	libobs_to_py(obs_source_t, source, false, &py_ret);
+
+fail:
+	return py_ret;
+}
+
+/* -------------------------------------------- */
+
+static void add_hook_functions(PyObject *module)
+{
+	static PyMethodDef funcs[] = {
+#define DEF_FUNC(n, c) {n, c, METH_VARARGS, NULL}
+
+		DEF_FUNC("obs_remove_tick_callback",
+		         obs_python_remove_tick_callback),
+		DEF_FUNC("obs_add_tick_callback",
+		         obs_python_add_tick_callback),
+		DEF_FUNC("signal_handler_remove_current",
+		         obs_python_signal_handler_remove_current),
+		DEF_FUNC("signal_handler_disconnect",
+		         obs_python_signal_handler_disconnect),
+		DEF_FUNC("signal_handler_connect",
+		         obs_python_signal_handler_connect),
+		DEF_FUNC("signal_handler_disconnect_global",
+		         obs_python_signal_handler_disconnect_global),
+		DEF_FUNC("signal_handler_connect_global",
+		         obs_python_signal_handler_connect_global),
+		DEF_FUNC("signal_handler_remove_current",
+		         obs_python_signal_handler_remove_current),
+		DEF_FUNC("calldata_source", calldata_source),
+
+#undef DEF_FUNC
+		{0}
+	};
+
+	add_functions_to_py_module(module, funcs);
+}
+
+/* -------------------------------------------- */
+
 bool obs_python_script_load(obs_script_t *s)
 {
 	struct obs_python_script *data = (struct obs_python_script *)s;
 	if (!data->base.loaded) {
+		lock_python();
 		data->base.loaded = load_python_script(data);
+		unlock_python();
 	}
 
 	return data->base.loaded;
@@ -227,8 +772,9 @@ obs_script_t *obs_python_script_create(const char *path)
 
 	lock_python();
 	add_to_python_path(data->dir.array);
-	load_python_script(data);
+	data->base.loaded = load_python_script(data);
 	unlock_python();
+
 	return (obs_script_t *)data;
 }
 
@@ -239,6 +785,43 @@ void obs_python_script_unload(obs_script_t *s)
 	if (!s->loaded)
 		return;
 
+	/* ---------------------------- */
+	/* unhook tick function         */
+
+	if (data->p_prev_next_tick) {
+		pthread_mutex_lock(&tick_mutex);
+
+		struct obs_python_script *next = data->next_tick;
+		if (next) next->p_prev_next_tick = data->p_prev_next_tick;
+		*data->p_prev_next_tick = next;
+
+		pthread_mutex_unlock(&tick_mutex);
+
+		data->p_prev_next_tick = NULL;
+		data->next_tick = NULL;
+	}
+
+	lock_python();
+
+	Py_XDECREF(data->tick);
+	data->tick = NULL;
+
+	/* ---------------------------- */
+	/* remove all callbacks         */
+
+	struct python_obs_callback *cb = data->first_callback;
+	while (cb) {
+		struct python_obs_callback *next = cb->next;
+		remove_python_obs_callback(cb);
+		cb = next;
+	}
+
+	/* ---------------------------- */
+	/* unload                       */
+
+	unload_python_script(data);
+	unlock_python();
+
 	s->loaded = false;
 }
 
@@ -247,11 +830,56 @@ void obs_python_script_destroy(obs_script_t *s)
 	struct obs_python_script *data = (struct obs_python_script *)s;
 
 	if (data) {
+		lock_python();
+		Py_XDECREF(data->module);
+		unlock_python();
+
 		dstr_free(&data->base.path);
 		dstr_free(&data->dir);
 		dstr_free(&data->file);
 		bfree(data);
 	}
+}
+
+/* -------------------------------------------- */
+
+static void python_tick(void *param, float seconds)
+{
+	struct obs_python_script *data;
+	bool valid;
+
+	pthread_mutex_lock(&tick_mutex);
+	valid = !!first_tick_script;
+	pthread_mutex_unlock(&tick_mutex);
+
+	if (!valid)
+		return;
+
+	lock_python();
+
+	PyObject *args = Py_BuildValue("(f)", seconds);
+
+	pthread_mutex_lock(&tick_mutex);
+	data = first_tick_script;
+	while (data) {
+		cur_python_script = data;
+
+		PyObject *py_ret = PyObject_CallObject(data->tick, args);
+		Py_XDECREF(py_ret);
+		py_error();
+
+		data = data->next_tick;
+	}
+
+	cur_python_script = NULL;
+
+	pthread_mutex_unlock(&tick_mutex);
+
+	Py_XDECREF(args);
+
+	unlock_python();
+
+	UNUSED_PARAMETER(param);
 }
 
 /* -------------------------------------------- */
@@ -271,6 +899,8 @@ bool obs_scripting_python_loaded(void)
 void obs_python_load(void)
 {
 	da_init(python_paths);
+	pthread_mutex_init(&tick_mutex, NULL);
+	pthread_mutex_init(&detach_python_mutex, NULL);
 }
 
 bool obs_scripting_load_python(const char *python_path)
@@ -351,6 +981,9 @@ bool obs_scripting_load_python(const char *python_path)
 	python_loaded = PyRun_SimpleString(startup_script) == 0;
 	py_error();
 
+	add_hook_functions(py_obspython);
+	py_error();
+
 out:
 	/* ---------------------------------------------- */
 	/* Free data                                      */
@@ -362,20 +995,42 @@ out:
 		obs_python_unload();
 	}
 
+	if (python_loaded)
+		obs_add_tick_callback(python_tick, NULL);
+
 	return python_loaded;
 }
 
 void obs_python_unload(void)
 {
+	pthread_mutex_lock(&detach_python_mutex);
+
+	struct python_obs_callback *cur = detached_python_callbacks;
+	while (cur) {
+		struct python_obs_callback *next = cur->next;
+		just_free_python_obs_callback(cur);
+		cur = next;
+	}
+
+	pthread_mutex_unlock(&detach_python_mutex);
+
+	/* ---------------------- */
+
+	if (Py_IsInitialized()) {
+		PyGILState_Ensure();
+
+		Py_XDECREF(py_obspython);
+		Py_Finalize();
+	}
+
+	/* ---------------------- */
+
+	obs_remove_tick_callback(python_tick, NULL);
+
 	for (size_t i = 0; i < python_paths.num; i++)
 		bfree(python_paths.array[i]);
 	da_free(python_paths);
 
-	if (!Py_IsInitialized())
-		return;
-
-	PyGILState_Ensure();
-
-	Py_XDECREF(py_obspython);
-	Py_Finalize();
+	pthread_mutex_destroy(&tick_mutex);
+	pthread_mutex_destroy(&detach_python_mutex);
 }

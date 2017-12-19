@@ -18,6 +18,7 @@
 #pragma once
 
 #include <util/dstr.h>
+#include <callback/calldata.h>
 #include "obs-scripting.h"
 
 struct obs_script {

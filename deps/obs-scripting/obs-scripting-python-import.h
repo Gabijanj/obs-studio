@@ -69,6 +69,7 @@ extern PyObject *(*Import_PyImport_ImportModule)(const char *name);
 extern PyObject *(*Import_PyObject_CallFunctionObjArgs)(PyObject *callable, ...);
 extern PyObject (*Import__Py_NotImplementedStruct);
 extern PyObject *(*Import_PyExc_TypeError);
+extern PyObject *(*Import_PyExc_RuntimeError);
 extern PyObject *(*Import_PyObject_GetAttr)(PyObject *, PyObject *);
 extern PyObject *(*Import_PyUnicode_FromString)(const char *u);
 extern PyObject *(*Import_PyDict_GetItemString)(PyObject *dp, const char *key);
@@ -85,6 +86,17 @@ extern struct _longobject (*Import__Py_TrueStruct);
 extern void (*Import_PyGILState_Release)(PyGILState_STATE);
 extern int (*Import_PyList_Append)(PyObject *, PyObject *);
 extern PyObject *(*Import_PySys_GetObject)(const char *);
+extern PyObject *(*Import_PyImport_ReloadModule)(PyObject *m);
+extern PyObject *(*Import_PyObject_GetAttrString)(PyObject *, const char *);
+extern PyObject *(*Import_PyCapsule_New)(void *pointer, const char *name, PyCapsule_Destructor destructor);
+extern void *(*Import_PyCapsule_GetPointer)(PyObject *capsule, const char *name);
+extern int (*Import_PyArg_ParseTuple)(PyObject *, const char *, ...);
+extern PyTypeObject (*Import_PyFunction_Type);
+extern int (*Import_PyObject_SetAttr)(PyObject *, PyObject *, PyObject *);
+extern PyObject *(*Import__PyObject_New)(PyTypeObject *);
+extern void *(*Import_PyCapsule_Import)(const char *name, int no_block); 
+extern void (*Import_PyErr_Clear)(void);
+extern PyObject *(*Import_PyObject_Call)(PyObject *callable_object, PyObject *args, PyObject *kwargs);
 
 extern bool import_python(const char *python_path);
 
@@ -122,6 +134,7 @@ extern bool import_python(const char *python_path);
 # define PyObject_CallFunctionObjArgs Import_PyObject_CallFunctionObjArgs
 # define _Py_NotImplementedStruct (*Import__Py_NotImplementedStruct)
 # define PyExc_TypeError (*Import_PyExc_TypeError)
+# define PyExc_RuntimeError (*Import_PyExc_RuntimeError)
 # define PyObject_GetAttr Import_PyObject_GetAttr
 # define PyUnicode_FromString Import_PyUnicode_FromString
 # define PyDict_GetItemString Import_PyDict_GetItemString
@@ -138,6 +151,17 @@ extern bool import_python(const char *python_path);
 # define PyGILState_Release Import_PyGILState_Release
 # define PyList_Append Import_PyList_Append
 # define PySys_GetObject Import_PySys_GetObject
+# define PyImport_ReloadModule Import_PyImport_ReloadModule
+# define PyObject_GetAttrString Import_PyObject_GetAttrString
+# define PyCapsule_New Import_PyCapsule_New
+# define PyCapsule_GetPointer Import_PyCapsule_GetPointer
+# define PyArg_ParseTuple Import_PyArg_ParseTuple
+# define PyFunction_Type (*Import_PyFunction_Type)
+# define PyObject_SetAttr Import_PyObject_SetAttr
+# define _PyObject_New Import__PyObject_New
+# define PyCapsule_Import Import_PyCapsule_Import
+# define PyErr_Clear Import_PyErr_Clear
+# define PyObject_Call Import_PyObject_Call
 # endif
 
 #endif
