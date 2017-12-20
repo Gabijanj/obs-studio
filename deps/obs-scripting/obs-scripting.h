@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <stdarg.h>
 #include <util/c99defs.h>
 
 #ifdef __cplusplus
@@ -34,6 +35,15 @@ enum obs_script_lang {
 EXPORT bool obs_scripting_load(void);
 EXPORT void obs_scripting_unload(void);
 EXPORT const char **obs_scripting_supported_formats(void);
+
+typedef void (*scripting_log_handler_t)(
+		void *p,
+		obs_script_t *script,
+		int lvl,
+		const char *msg);
+
+EXPORT void obs_scripting_set_log_callback(
+		scripting_log_handler_t handler, void *param);
 
 EXPORT bool obs_scripting_python_runtime_linked(void);
 EXPORT bool obs_scripting_python_loaded(void);

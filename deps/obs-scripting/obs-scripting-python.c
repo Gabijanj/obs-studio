@@ -35,14 +35,12 @@ import os\n\
 import obspython\n\
 class stdout_logger(object):\n\
 	def write(self, message):\n\
-		obspython.blog(obspython.LOG_INFO | obspython.LOG_TEXTBLOCK,\n\
-				message)\n\
+		obspython.script_log(obspython.LOG_INFO, message)\n\
 	def flush(self):\n\
 		pass\n\
 class stderr_logger(object):\n\
 	def write(self, message):\n\
-		obspython.blog(obspython.LOG_ERROR | obspython.LOG_TEXTBLOCK,\n\
-				message)\n\
+		obspython.script_log(obspython.LOG_ERROR, message)\n\
 	def flush(self):\n\
 		pass\n\
 os.environ['PYTHONUNBUFFERED'] = '1'\n\
@@ -181,7 +179,7 @@ static bool load_python_script(struct obs_python_script *data)
 	cur_python_script = data;
 
 	if (!data->module) {
-		py_file   = PyUnicode_FromString(data->file.array);
+		py_file   = PyUnicode_FromString(data->name.array);
 		py_module = PyImport_Import(py_file);
 	} else {
 		py_module = PyImport_ReloadModule(data->module);
@@ -372,9 +370,11 @@ static PyObject *timer_remove(PyObject *self, PyObject *args)
 	if (!PyArg_ParseTuple(args, "O:" __FUNCTION__, &py_cb))
 		return python_none();
 
+	debug("timer_remove called");
+
 	struct python_obs_callback *cb = find_python_obs_callback(script, py_cb);
 	if (cb) remove_python_obs_callback(cb);
-	return 0;
+	return python_none();
 }
 
 static void timer_call(struct script_callback *p_cb)
@@ -414,6 +414,8 @@ static PyObject *timer_add(PyObject *self, PyObject *args)
 
 	if (!PyArg_ParseTuple(args, "Oi:" __FUNCTION__, &py_cb, &ms))
 		return python_none();
+
+	debug("timer_add called");
 
 	struct python_obs_callback *cb = add_python_obs_callback_extra(
 			script, py_cb, sizeof(struct python_obs_timer));
@@ -766,11 +768,62 @@ fail:
 
 /* -------------------------------------------- */
 
+struct dstr cur_py_log_chunk = {0};
+
+static PyObject *py_script_log(PyObject *self, PyObject *args)
+{
+	static bool calling_self = false;
+	int log_level;
+	const char *msg;
+
+	UNUSED_PARAMETER(self);
+
+	if (calling_self)
+		return python_none();
+	calling_self = true;
+
+	/* ------------------- */
+
+	if (!PyArg_ParseTuple(args, "is:calldata_source", &log_level, &msg))
+		goto fail;
+	if (!msg || !*msg)
+		goto fail;
+
+	dstr_cat(&cur_py_log_chunk, msg);
+
+	const char *start = cur_py_log_chunk.array;
+	char *endl = strchr(start, '\n');
+
+	while (endl) {
+		*endl = 0;
+		script_log(&cur_python_script->base, log_level, "%s", start);
+		*endl = '\n';
+
+		start = endl + 1;
+		endl = strchr(start, '\n');
+	}
+
+	if (start) {
+		size_t len = strlen(start);
+		if (len) memmove(cur_py_log_chunk.array, start, len);
+		dstr_resize(&cur_py_log_chunk, len);
+	}
+
+	/* ------------------- */
+
+fail:
+	calling_self = false;
+	return python_none();
+}
+
+/* -------------------------------------------- */
+
 static void add_hook_functions(PyObject *module)
 {
 	static PyMethodDef funcs[] = {
 #define DEF_FUNC(n, c) {n, c, METH_VARARGS, NULL}
 
+		DEF_FUNC("script_log", py_script_log),
 		DEF_FUNC("timer_remove", timer_remove),
 		DEF_FUNC("timer_add", timer_add),
 		DEF_FUNC("obs_remove_tick_callback",
@@ -823,17 +876,18 @@ obs_script_t *obs_python_script_create(const char *path)
 	const char *slash = path && *path ? strrchr(path, '/') : NULL;
 	if (slash) {
 		slash++;
-		dstr_copy(&data->file, slash);
+		dstr_copy(&data->base.file, slash);
 		dstr_left(&data->dir, &data->base.path, slash - path);
 	} else {
-		dstr_copy(&data->file, path);
+		dstr_copy(&data->base.file, path);
 	}
 
-	path = data->file.array;
+	path = data->base.file.array;
+	dstr_copy_dstr(&data->name, &data->base.file);
 
 	const char *ext = strstr(path, ".py");
 	if (ext)
-		dstr_resize(&data->file, ext - path);
+		dstr_resize(&data->name, ext - path);
 
 	lock_python();
 	add_to_python_path(data->dir.array);
@@ -900,8 +954,9 @@ void obs_python_script_destroy(obs_script_t *s)
 		unlock_python();
 
 		dstr_free(&data->base.path);
+		dstr_free(&data->base.file);
 		dstr_free(&data->dir);
-		dstr_free(&data->file);
+		dstr_free(&data->name);
 		bfree(data);
 	}
 }
@@ -1126,4 +1181,5 @@ void obs_python_unload(void)
 
 	pthread_mutex_destroy(&tick_mutex);
 	pthread_mutex_destroy(&timer_mutex);
+	dstr_free(&cur_py_log_chunk);
 }

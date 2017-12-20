@@ -80,8 +80,7 @@ static bool load_lua_script(struct obs_lua_script *data)
 
 	lua_State *script = lua_newstate(luaalloc, data);
 	if (!script) {
-		warn("Failed to create new lua state for '%s'",
-				data->base.path.array);
+		script_warn(&data->base, "Failed to create new lua state");
 		goto fail;
 	}
 
@@ -90,8 +89,7 @@ static bool load_lua_script(struct obs_lua_script *data)
 	luaL_openlibs(script);
 
 	if (luaL_dostring(script, startup_script) != 0) {
-		warn("Error executing startup script for plugin '%s': %s",
-				data->base.path.array,
+		script_warn(&data->base, "Error executing startup script 1: %s",
 				lua_tostring(script, -1));
 		goto fail;
 	}
@@ -101,8 +99,7 @@ static bool load_lua_script(struct obs_lua_script *data)
 	dstr_free(&str);
 
 	if (ret != 0) {
-		warn("Error executing startup script for plugin '%s': %s",
-				data->base.path.array,
+		script_warn(&data->base, "Error executing startup script 2: %s",
 				lua_tostring(script, -1));
 		goto fail;
 	}
@@ -114,15 +111,13 @@ static bool load_lua_script(struct obs_lua_script *data)
 #endif
 
 	if (luaL_loadfile(script, data->base.path.array) != 0) {
-		warn("Error loading plugin '%s': %s",
-				data->base.path.array,
+		script_warn(&data->base, "Error loading file: %s",
 				lua_tostring(script, -1));
 		goto fail;
 	}
 
 	if (lua_pcall(script, 0, LUA_MULTRET, 0) != 0) {
-		warn("Error loading plugin '%s': %s",
-				data->base.path.array,
+		script_warn(&data->base, "Error running file: %s",
 				lua_tostring(script, -1));
 		goto fail;
 	}
@@ -154,8 +149,7 @@ static bool load_lua_script(struct obs_lua_script *data)
 	lua_getglobal(script, "script_load");
 	if (lua_isfunction(script, -1)) {
 		if (lua_pcall(script, 0, 0, 0) != 0) {
-			warn("Error loading plugin '%s': %s",
-					data->base.path.array,
+			script_warn(&data->base, "Error calling script_load: %s",
 					lua_tostring(script, -1));
 			goto fail;
 		}
@@ -570,21 +564,59 @@ fail:
 
 static int hook_print(lua_State *script)
 {
+	struct obs_lua_script *data = get_obs_script(script);
 	const char *msg = lua_tostring(script, 1);
 	if (!msg)
 		return 0;
 
-	info("%s", msg);
+	script_info(&data->base, "%s", msg);
 	return 0;
 }
 
 static int hook_error(lua_State *script)
 {
+	struct obs_lua_script *data = get_obs_script(script);
 	const char *msg = lua_tostring(script, 1);
 	if (!msg)
 		return 0;
 
-	warn("%s", msg);
+	script_warn(&data->base, "%s", msg);
+	return 0;
+}
+
+/* -------------------------------------------- */
+
+static int lua_script_log(lua_State *script)
+{
+	struct obs_lua_script *data = get_obs_script(script);
+	int log_level = (int)lua_tointeger(script, 1);
+	const char *msg = lua_tostring(script, 2);
+
+	if (!msg)
+		return 0;
+
+	/* ------------------- */
+
+	dstr_copy(&data->log_chunk, msg);
+
+	const char *start = data->log_chunk.array;
+	char *endl = strchr(start, '\n');
+
+	while (endl) {
+		*endl = 0;
+		script_log(&data->base, log_level, "%s", start);
+		*endl = '\n';
+
+		start = endl + 1;
+		endl = strchr(start, '\n');
+	}
+
+	if (start && *start)
+		script_log(&data->base, log_level, "%s", start);
+	dstr_resize(&data->log_chunk, 0);
+
+	/* ------------------- */
+
 	return 0;
 }
 
@@ -592,15 +624,17 @@ static int hook_error(lua_State *script)
 
 static void add_hook_functions(lua_State *script)
 {
+#define add_func(name, func) \
+	do { \
+		lua_pushstring(script, name); \
+		lua_pushcfunction(script, func); \
+		lua_rawset(script, -3); \
+	} while (false)
+
 	lua_getglobal(script, "_G");
 
-	lua_pushstring(script, "print");
-	lua_pushcfunction(script, hook_print);
-	lua_rawset(script, -3);
-
-	lua_pushstring(script, "error");
-	lua_pushcfunction(script, hook_error);
-	lua_rawset(script, -3);
+	add_func("print", hook_print);
+	add_func("error", hook_error);
 
 	lua_pop(script, 1);
 
@@ -608,55 +642,32 @@ static void add_hook_functions(lua_State *script)
 
 	lua_getglobal(script, "obslua");
 
-	lua_pushstring(script, "timer_remove");
-	lua_pushcfunction(script, timer_remove);
-	lua_rawset(script, -3);
-
-	lua_pushstring(script, "timer_add");
-	lua_pushcfunction(script, timer_add);
-	lua_rawset(script, -3);
-
-	lua_pushstring(script, "obs_add_main_render_callback");
-	lua_pushcfunction(script, obs_lua_add_main_render_callback);
-	lua_rawset(script, -3);
-
-	lua_pushstring(script, "obs_remove_main_render_callback");
-	lua_pushcfunction(script, obs_lua_remove_main_render_callback);
-	lua_rawset(script, -3);
-
-	lua_pushstring(script, "obs_add_tick_callback");
-	lua_pushcfunction(script, obs_lua_add_tick_callback);
-	lua_rawset(script, -3);
-
-	lua_pushstring(script, "obs_remove_tick_callback");
-	lua_pushcfunction(script, obs_lua_remove_tick_callback);
-	lua_rawset(script, -3);
-
-	lua_pushstring(script, "calldata_source");
-	lua_pushcfunction(script, calldata_source);
-	lua_rawset(script, -3);
-
-	lua_pushstring(script, "signal_handler_connect");
-	lua_pushcfunction(script, obs_lua_signal_handler_connect);
-	lua_rawset(script, -3);
-
-	lua_pushstring(script, "signal_handler_disconnect");
-	lua_pushcfunction(script, obs_lua_signal_handler_disconnect);
-	lua_rawset(script, -3);
-
-	lua_pushstring(script, "signal_handler_connect_global");
-	lua_pushcfunction(script, obs_lua_signal_handler_connect_global);
-	lua_rawset(script, -3);
-
-	lua_pushstring(script, "signal_handler_disconnect_global");
-	lua_pushcfunction(script, obs_lua_signal_handler_disconnect_global);
-	lua_rawset(script, -3);
-
-	lua_pushstring(script, "remove_current_callback");
-	lua_pushcfunction(script, remove_current_callback);
-	lua_rawset(script, -3);
+	add_func("script_log", lua_script_log);
+	add_func("timer_remove", timer_remove);
+	add_func("timer_add", timer_add);
+	add_func("obs_add_main_render_callback",
+			obs_lua_add_main_render_callback);
+	add_func("obs_remove_main_render_callback",
+			obs_lua_remove_main_render_callback);
+	add_func("obs_add_tick_callback",
+			obs_lua_add_tick_callback);
+	add_func("obs_remove_tick_callback",
+			obs_lua_remove_tick_callback);
+	add_func("calldata_source",
+			calldata_source);
+	add_func("signal_handler_connect",
+			obs_lua_signal_handler_connect);
+	add_func("signal_handler_disconnect",
+			obs_lua_signal_handler_disconnect);
+	add_func("signal_handler_connect_global",
+			obs_lua_signal_handler_connect_global);
+	add_func("signal_handler_disconnect_global",
+			obs_lua_signal_handler_disconnect_global);
+	add_func("remove_current_callback",
+			remove_current_callback);
 
 	lua_pop(script, 1);
+#undef add_func
 }
 
 /* -------------------------------------------- */
@@ -747,10 +758,10 @@ obs_script_t *obs_lua_script_create(const char *path)
 	char *slash = path && *path ? strrchr(path, '/') : NULL;
 	if (slash) {
 		slash++;
-		dstr_copy(&data->file, slash);
+		dstr_copy(&data->base.file, slash);
 		dstr_left(&data->dir, &data->base.path, slash - path);
 	} else {
-		dstr_copy(&data->file, path);
+		dstr_copy(&data->base.file, path);
 	}
 
 	obs_lua_script_load((obs_script_t *)data);
@@ -818,8 +829,9 @@ void obs_lua_script_destroy(obs_script_t *s)
 	if (data) {
 		pthread_mutex_destroy(&data->mutex);
 		dstr_free(&data->base.path);
+		dstr_free(&data->base.file);
+		dstr_free(&data->log_chunk);
 		dstr_free(&data->dir);
-		dstr_free(&data->file);
 		bfree(data);
 	}
 }

@@ -278,59 +278,6 @@ static PyObject *set_current_profile(PyObject *self, PyObject *args)
 
 /* ----------------------------------- */
 
-static void tools_menu_callback(void *priv)
-{
-	struct python_obs_callback *cb = priv;
-
-	if (cb->base.removed) {
-		/* TODO */
-		return;
-	}
-
-	lock_python();
-
-	struct python_obs_callback *last_cb = cur_python_cb;
-	cur_python_cb = cb;
-	cur_python_script = (struct obs_python_script *)cb->base.script;
-
-	PyObject *py_ret = PyObject_CallObject(cb->func, NULL);
-	Py_XDECREF(py_ret);
-	py_error();
-
-	cur_python_script = NULL;
-	cur_python_cb = last_cb;
-
-	unlock_python();
-}
-
-static void add_tools_menu_item_defer(void *p_cb)
-{
-	struct script_callback *cb = p_cb;
-	const char *name = calldata_string(&cb->extra, "name");
-	obs_frontend_add_tools_menu_item(name, tools_menu_callback, cb);
-}
-
-static PyObject *add_tools_menu_item(PyObject *self, PyObject *args)
-{
-	struct obs_python_script *script = cur_python_script;
-	const char *name;
-	PyObject *py_cb = NULL;
-
-	UNUSED_PARAMETER(self);
-
-	if (!PyArg_ParseTuple(args, "sO:" __FUNCTION__, &name, &py_cb))
-		return python_none();
-	if (!py_cb || !PyFunction_Check(py_cb))
-		return python_none();
-
-	struct python_obs_callback *cb = add_python_obs_callback(script, py_cb);
-	calldata_set_string(&cb->base.extra, "name", name);
-	defer_call_post(add_tools_menu_item_defer, cb);
-	return python_none();
-}
-
-/* ----------------------------------- */
-
 static void frontend_save_callback(obs_data_t *save_data, bool saving,
 		void *priv)
 {
@@ -426,7 +373,6 @@ void add_python_frontend_funcs(PyObject *module)
 		DEF_FUNC(get_profiles),
 		DEF_FUNC(get_current_profile),
 		DEF_FUNC(set_current_profile),
-		DEF_FUNC(add_tools_menu_item),
 		DEF_FUNC(remove_save_callback),
 		DEF_FUNC(add_save_callback),
 

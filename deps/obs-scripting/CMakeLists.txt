@@ -100,6 +100,7 @@ endif()
 
 set(obs-scripting_SOURCES
 	obs-scripting.c
+	obs-scripting-logging.c
 	cstrcache.cpp
 	)
 set(obs-scripting_HEADERS

@@ -15,31 +15,37 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ******************************************************************************/
 
-#pragma once
+#include "obs-scripting-internal.h"
+#include <util/platform.h>
 
-#include <util/dstr.h>
-#include <callback/calldata.h>
-#include "obs-scripting.h"
+static scripting_log_handler_t callback = NULL;
+static void *param = NULL;
 
-struct obs_script {
-	enum obs_script_lang type;
-	bool loaded;
-	struct dstr path;
-	struct dstr file;
-};
+void script_log_va(obs_script_t *script, int level, const char *format,
+		va_list args)
+{
+	char msg[2048];
+	const char *lang = "(Unknown)";
+	size_t start_len;
 
-struct script_callback;
-typedef void (*defer_call_cb)(struct script_callback *cb);
+	switch (script->type) {
+	case OBS_SCRIPT_LANG_LUA:    lang = "Lua"; break;
+	case OBS_SCRIPT_LANG_PYTHON: lang = "Python"; break;
+	}
 
-extern void defer_call_post(defer_call_cb call, void *cb);
+	start_len = snprintf(msg, sizeof(msg), "[%s: %s] ",
+			lang, script->file.array);
+	vsnprintf(msg + start_len, sizeof(msg) - start_len, format, args);
 
-extern void script_log(obs_script_t *script, int level, const char *format, ...);
-extern void script_log_va(obs_script_t *script, int level, const char *format,
-		va_list args);
+	if (callback)
+		callback(param, script, level, msg + start_len);
+	blog(level, "%s", msg);
+}
 
-#define script_warn(script, format, ...) \
-	script_log(script, LOG_WARNING, format, ##__VA_ARGS__)
-#define script_info(script, format, ...) \
-	script_log(script, LOG_INFO, format, ##__VA_ARGS__)
-#define script_debug(script, format, ...) \
-	script_log(script, LOG_DEBUG, format, ##__VA_ARGS__)
+void script_log(obs_script_t *script, int level, const char *format, ...)
+{
+	va_list args;
+	va_start(args, format);
+	script_log_va(script, level, format, args);
+	va_end(args);
+}

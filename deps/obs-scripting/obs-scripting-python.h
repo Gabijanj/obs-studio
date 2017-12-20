@@ -52,7 +52,7 @@ struct obs_python_script {
 	obs_script_t base;
 
 	struct dstr dir;
-	struct dstr file;
+	struct dstr name;
 
 	PyObject *module;
 

@@ -46,7 +46,7 @@ struct obs_lua_script {
 	obs_script_t base;
 
 	struct dstr dir;
-	struct dstr file;
+	struct dstr log_chunk;
 
 	pthread_mutex_t mutex;
 	lua_State *script;
@@ -223,11 +223,14 @@ static inline bool call_func_(lua_State *script,
 	if (reg_idx == LUA_REFNIL)
 		return false;
 
+	struct obs_lua_script *data = get_obs_script(script);
+
 	lua_rawgeti(script, LUA_REGISTRYINDEX, reg_idx);
 	lua_insert(script, -1 - args);
 
 	if (lua_pcall(script, args, rets, 0) != 0) {
-		warn("Failed to call %s for %s: %s", func, display_name,
+		script_warn(&data->base, "Failed to call %s for %s: %s", func,
+				display_name,
 				lua_tostring(script, -1));
 		lua_pop(script, 1);
 		return false;

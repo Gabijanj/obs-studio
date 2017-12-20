@@ -200,39 +200,6 @@ static int set_current_profile(lua_State *script)
 
 /* ----------------------------------- */
 
-static void tools_menu_callback(void *priv)
-{
-	struct lua_obs_callback *cb = priv;
-	lua_State *script = cb->script;
-
-	lock_script(script);
-	call_func(tools_menu_callback, 0, 0);
-	unlock_script();
-}
-
-static void add_tools_menu_item_defer(void *p_cb)
-{
-	struct script_callback *cb = p_cb;
-	const char *name = calldata_string(&cb->extra, "name");
-	obs_frontend_add_tools_menu_item(name, tools_menu_callback, cb);
-}
-
-static int add_tools_menu_item(lua_State *script)
-{
-	const char *name = lua_tostring(script, 1);
-	if (!name || !*name)
-		return 0;
-	if (!is_function(script, 2))
-		return 0;
-
-	struct lua_obs_callback *cb = add_lua_obs_callback(script, 2);
-	calldata_set_string(&cb->base.extra, "name", name);
-	defer_call_post(add_tools_menu_item_defer, cb);
-	return 0;
-}
-
-/* ----------------------------------- */
-
 static void frontend_event_callback(enum obs_frontend_event event, void *priv)
 {
 	struct lua_obs_callback *cb = priv;
@@ -354,7 +321,6 @@ void add_lua_frontend_funcs(lua_State *script)
 	add_func(get_profiles);
 	add_func(get_current_profile);
 	add_func(set_current_profile);
-	add_func(add_tools_menu_item);
 	add_func(remove_event_callback);
 	add_func(add_event_callback);
 	add_func(remove_save_callback);
