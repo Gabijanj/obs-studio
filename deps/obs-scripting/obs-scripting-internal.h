@@ -26,3 +26,8 @@ struct obs_script {
 	bool loaded;
 	struct dstr path;
 };
+
+struct script_callback;
+typedef void (*defer_call_cb)(struct script_callback *cb);
+
+extern void defer_call_post(defer_call_cb call, void *cb);

@@ -66,6 +66,12 @@ if(PYTHONLIBS_FOUND)
 		obs-scripting-python-import.h
 		)
 
+	if(UI_ENABLED)
+		set(obs-scripting-python_SOURCES
+			${obs-scripting-python_SOURCES}
+			obs-scripting-python-frontend.c
+			)
+	endif()
 	if(WIN32 OR APPLE)
 		set(obs-scripting-python_SOURCES
 			${obs-scripting-python_SOURCES}

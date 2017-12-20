@@ -97,6 +97,9 @@ extern PyObject *(*Import__PyObject_New)(PyTypeObject *);
 extern void *(*Import_PyCapsule_Import)(const char *name, int no_block); 
 extern void (*Import_PyErr_Clear)(void);
 extern PyObject *(*Import_PyObject_Call)(PyObject *callable_object, PyObject *args, PyObject *kwargs);
+extern PyObject *(*Import_PyList_New)(Py_ssize_t size);
+extern Py_ssize_t (*Import_PyList_Size)(PyObject *);
+extern PyObject *(*Import_PyList_GetItem)(PyObject *, Py_ssize_t);
 
 extern bool import_python(const char *python_path);
 
@@ -162,6 +165,9 @@ extern bool import_python(const char *python_path);
 # define PyCapsule_Import Import_PyCapsule_Import
 # define PyErr_Clear Import_PyErr_Clear
 # define PyObject_Call Import_PyObject_Call
+# define PyList_New Import_PyList_New
+# define PyList_Size Import_PyList_Size
+# define PyList_GetItem Import_PyList_GetItem
 # endif
 
 #endif

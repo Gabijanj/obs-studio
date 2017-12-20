@@ -87,6 +87,9 @@ PyObject *(*Import__PyObject_New)(PyTypeObject *);
 void *(*Import_PyCapsule_Import)(const char *name, int no_block); 
 void (*Import_PyErr_Clear)(void);
 PyObject *(*Import_PyObject_Call)(PyObject *callable_object, PyObject *args, PyObject *kwargs);
+PyObject *(*Import_PyList_New)(Py_ssize_t size);
+Py_ssize_t (*Import_PyList_Size)(PyObject *);
+PyObject *(*Import_PyList_GetItem)(PyObject *, Py_ssize_t);
 
 #ifdef _WIN32
 #define SO_EXT ".dll"
@@ -188,6 +191,9 @@ bool import_python(const char *python_path)
 	IMPORT_FUNC(PyCapsule_Import);
 	IMPORT_FUNC(PyErr_Clear);
 	IMPORT_FUNC(PyObject_Call);
+	IMPORT_FUNC(PyList_New);
+	IMPORT_FUNC(PyList_Size);
+	IMPORT_FUNC(PyList_GetItem);
 
 #undef IMPORT_FUNC
 

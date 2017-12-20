@@ -99,6 +99,12 @@ static inline void *python_obs_callback_extra_data(
 	return (void*)&cb[1];
 }
 
+static inline struct obs_python_script *python_obs_callback_script(
+		struct python_obs_callback *cb)
+{
+	return (struct obs_python_script *)cb->base.script;
+}
+
 static inline struct python_obs_callback *find_next_python_obs_callback(
 		struct obs_python_script *script,
 		struct python_obs_callback *cb, PyObject *func)
@@ -163,10 +169,14 @@ struct py_source;
 typedef struct py_source py_source_t;
 
 extern PyObject* py_libobs;
+extern struct python_obs_callback *cur_python_cb;
+extern struct obs_python_script *cur_python_script;
 
 extern void py_to_obs_source_info(py_source_t *py_info);
 extern PyObject *py_obs_register_source(PyObject *self, PyObject *args);
 extern PyObject *py_obs_get_script_config_path(PyObject *self, PyObject *args);
+extern void add_functions_to_py_module(PyObject *module,
+		PyMethodDef *method_list);
 
 /* ------------------------------------------------------------ */
 /* Warning: the following functions expect python to be locked! */
@@ -188,3 +198,10 @@ extern bool libobs_to_py_(const char *type,
 
 extern bool py_call(PyObject *call, PyObject **ret, const char *arg_def, ...);
 extern bool py_import_script(const char *name);
+
+static inline PyObject *python_none(void)
+{
+	PyObject *none = Py_None;
+	Py_INCREF(none);
+	return none;
+}

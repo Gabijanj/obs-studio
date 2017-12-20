@@ -60,8 +60,8 @@ static pthread_mutex_t tick_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct obs_python_script *first_tick_script = NULL;
 
 static PyObject *py_obspython = NULL;
-static struct obs_python_script *cur_python_script = NULL;
-static struct python_obs_callback *signal_current_cb = NULL;
+struct obs_python_script *cur_python_script = NULL;
+struct python_obs_callback *cur_python_cb = NULL;
 
 /* -------------------------------------------- */
 
@@ -139,19 +139,9 @@ bool libobs_to_py_(const char *type,
 	py_to_libobs_(#type " *", py_obj, libobs_out, \
 			NULL, __func__, __LINE__)
 
-/* -------------------------------------------- */
-
-static inline PyObject *python_none(void)
-{
-	PyObject *none = Py_None;
-	Py_INCREF(none);
-	return none;
-}
-
 /* ========================================================================= */
 
-static void add_functions_to_py_module(PyObject *module,
-		PyMethodDef *method_list)
+void add_functions_to_py_module(PyObject *module, PyMethodDef *method_list)
 {
 	PyObject *dict = PyModule_GetDict(module);
 	PyObject *name = PyModule_GetNameObject(module);
@@ -241,6 +231,8 @@ static bool load_python_script(struct obs_python_script *data)
 		py_tick = NULL;
 
 		pthread_mutex_unlock(&tick_mutex);
+	} else {
+		PyErr_Clear();
 	}
 
 	py_load = PyObject_GetAttrString(py_module, "script_load");
@@ -333,6 +325,109 @@ fail:
 
 /* -------------------------------------------- */
 
+struct python_obs_timer {
+	struct python_obs_timer *next;
+	struct python_obs_timer **p_prev_next;
+
+	uint64_t last_ts;
+	uint64_t interval;
+};
+
+static pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct python_obs_timer *first_timer = NULL;
+
+static inline void python_obs_timer_init(struct python_obs_timer *timer)
+{
+	pthread_mutex_lock(&timer_mutex);
+
+	struct python_obs_timer *next = first_timer;
+	timer->next = next;
+	timer->p_prev_next = &first_timer;
+	if (next) next->p_prev_next = &timer->next;
+	first_timer = timer;
+
+	pthread_mutex_unlock(&timer_mutex);
+}
+
+static inline void python_obs_timer_remove(struct python_obs_timer *timer)
+{
+	struct python_obs_timer *next = timer->next;
+	if (next) next->p_prev_next = timer->p_prev_next;
+	*timer->p_prev_next = timer->next;
+}
+
+static inline struct python_obs_callback *python_obs_timer_cb(
+		struct python_obs_timer *timer)
+{
+	return &((struct python_obs_callback *)timer)[-1];
+}
+
+static PyObject *timer_remove(PyObject *self, PyObject *args)
+{
+	struct obs_python_script *script = cur_python_script;
+	PyObject *py_cb;
+
+	UNUSED_PARAMETER(self);
+
+	if (!PyArg_ParseTuple(args, "O:" __FUNCTION__, &py_cb))
+		return python_none();
+
+	struct python_obs_callback *cb = find_python_obs_callback(script, py_cb);
+	if (cb) remove_python_obs_callback(cb);
+	return 0;
+}
+
+static void timer_call(struct script_callback *p_cb)
+{
+	struct python_obs_callback *cb = (struct python_obs_callback *)p_cb;
+	struct obs_python_script *script = python_obs_callback_script(cb);
+
+	if (p_cb->removed)
+		return;
+
+	lock_python();
+	cur_python_script = script;
+	cur_python_cb = cb;
+
+	PyObject *py_ret = PyObject_CallObject(cb->func, NULL);
+	Py_XDECREF(py_ret);
+
+	cur_python_cb = NULL;
+	cur_python_script = NULL;
+	unlock_python();
+}
+
+static void defer_timer_init(struct script_callback *script_cb)
+{
+	struct python_obs_callback *cb = (struct python_obs_callback *)script_cb;
+	struct python_obs_timer *timer = python_obs_callback_extra_data(cb);
+	python_obs_timer_init(timer);
+}
+
+static PyObject *timer_add(PyObject *self, PyObject *args)
+{
+	struct obs_python_script *script = cur_python_script;
+	PyObject *py_cb;
+	int ms;
+
+	UNUSED_PARAMETER(self);
+
+	if (!PyArg_ParseTuple(args, "Oi:" __FUNCTION__, &py_cb, &ms))
+		return python_none();
+
+	struct python_obs_callback *cb = add_python_obs_callback_extra(
+			script, py_cb, sizeof(struct python_obs_timer));
+	struct python_obs_timer *timer = python_obs_callback_extra_data(cb);
+
+	timer->interval = (uint64_t)ms * 1000000ULL;
+	timer->last_ts = obs_get_video_frame_time();
+
+	defer_call_post(defer_timer_init, cb);
+	return python_none();
+}
+
+/* -------------------------------------------- */
+
 static void obs_python_tick_callback(void *priv, float seconds)
 {
 	struct python_obs_callback *cb = priv;
@@ -344,17 +439,18 @@ static void obs_python_tick_callback(void *priv, float seconds)
 
 	lock_python();
 
-	if (!cb->base.removed) {
-		cur_python_script = (struct obs_python_script *)cb->base.script;
+	struct python_obs_callback *last_cb = cur_python_cb;
+	cur_python_script = (struct obs_python_script *)cb->base.script;
+	cur_python_cb = cb;
 
-		PyObject *args = Py_BuildValue("(f)", seconds);
+	PyObject *args = Py_BuildValue("(f)", seconds);
 
-		PyObject *py_ret = PyObject_CallObject(cb->func, NULL);
-		Py_XDECREF(py_ret);
-		Py_XDECREF(args);
+	PyObject *py_ret = PyObject_CallObject(cb->func, args);
+	Py_XDECREF(py_ret);
+	Py_XDECREF(args);
 
-		cur_python_script = NULL;
-	}
+	cur_python_script = NULL;
+	cur_python_cb = last_cb;
 
 	unlock_python();
 }
@@ -410,7 +506,6 @@ static PyObject *obs_python_add_tick_callback(PyObject *self, PyObject *args)
 static void calldata_signal_callback(void *priv, calldata_t *cd)
 {
 	struct python_obs_callback *cb = priv;
-	struct python_obs_callback *last_current = signal_current_cb;
 
 	if (cb->base.removed) {
 		signal_handler_remove_current();
@@ -419,26 +514,25 @@ static void calldata_signal_callback(void *priv, calldata_t *cd)
 
 	lock_python();
 
-	if (!cb->base.removed) {
-		PyObject *py_cd;
+	PyObject *py_cd;
 
-		if (libobs_to_py(calldata_t, cd, false, &py_cd)) {
-			PyObject *args = Py_BuildValue("(O)", py_cd);
+	if (libobs_to_py(calldata_t, cd, false, &py_cd)) {
+		PyObject *args = Py_BuildValue("(O)", py_cd);
 
-			cur_python_script =
-				(struct obs_python_script *)cb->base.script;
+		struct python_obs_callback *last_cb = cur_python_cb;
+		cur_python_cb = cb;
+		cur_python_script =
+			(struct obs_python_script *)cb->base.script;
 
-			PyObject *py_ret = PyObject_CallObject(cb->func, args);
-			Py_XDECREF(py_ret);
-			py_error();
+		PyObject *py_ret = PyObject_CallObject(cb->func, args);
+		Py_XDECREF(py_ret);
+		py_error();
 
-			cur_python_script = NULL;
+		cur_python_script = NULL;
+		cur_python_cb = last_cb;
 
-			Py_XDECREF(args);
-			Py_XDECREF(py_cd);
-		}
-
-		signal_current_cb = last_current;
+		Py_XDECREF(args);
+		Py_XDECREF(py_cd);
 	}
 
 	unlock_python();
@@ -530,7 +624,6 @@ static void calldata_signal_callback_global(void *priv, const char *signal,
 		calldata_t *cd)
 {
 	struct python_obs_callback *cb = priv;
-	struct python_obs_callback *last_current = signal_current_cb;
 
 	if (cb->base.removed) {
 		signal_handler_remove_current();
@@ -539,26 +632,25 @@ static void calldata_signal_callback_global(void *priv, const char *signal,
 
 	lock_python();
 
-	if (!cb->base.removed) {
-		PyObject *py_cd;
+	PyObject *py_cd;
 
-		if (libobs_to_py(calldata_t, cd, false, &py_cd)) {
-			PyObject *args = Py_BuildValue("(sO)", signal, py_cd);
+	if (libobs_to_py(calldata_t, cd, false, &py_cd)) {
+		PyObject *args = Py_BuildValue("(sO)", signal, py_cd);
 
-			cur_python_script =
-				(struct obs_python_script *)cb->base.script;
+		struct python_obs_callback *last_cb = cur_python_cb;
+		cur_python_script =
+			(struct obs_python_script *)cb->base.script;
+		cur_python_cb = cb;
 
-			PyObject *py_ret = PyObject_CallObject(cb->func, args);
-			Py_XDECREF(py_ret);
-			py_error();
+		PyObject *py_ret = PyObject_CallObject(cb->func, args);
+		Py_XDECREF(py_ret);
+		py_error();
 
-			cur_python_script = NULL;
+		cur_python_script = NULL;
+		cur_python_cb = last_cb;
 
-			Py_XDECREF(args);
-			Py_XDECREF(py_cd);
-		}
-
-		signal_current_cb = last_current;
+		Py_XDECREF(args);
+		Py_XDECREF(py_cd);
 	}
 
 	unlock_python();
@@ -638,14 +730,13 @@ static PyObject *obs_python_signal_handler_connect_global(
 
 /* -------------------------------------------- */
 
-static PyObject *obs_python_signal_handler_remove_current(
-		PyObject *self, PyObject *args)
+static PyObject *remove_current_callback(PyObject *self, PyObject *args)
 {
 	UNUSED_PARAMETER(self);
 	UNUSED_PARAMETER(args);
 
-	if (signal_current_cb)
-		remove_python_obs_callback(signal_current_cb);
+	if (cur_python_cb)
+		remove_python_obs_callback(cur_python_cb);
 	return python_none();
 }
 
@@ -680,12 +771,12 @@ static void add_hook_functions(PyObject *module)
 	static PyMethodDef funcs[] = {
 #define DEF_FUNC(n, c) {n, c, METH_VARARGS, NULL}
 
+		DEF_FUNC("timer_remove", timer_remove),
+		DEF_FUNC("timer_add", timer_add),
 		DEF_FUNC("obs_remove_tick_callback",
 		         obs_python_remove_tick_callback),
 		DEF_FUNC("obs_add_tick_callback",
 		         obs_python_add_tick_callback),
-		DEF_FUNC("signal_handler_remove_current",
-		         obs_python_signal_handler_remove_current),
 		DEF_FUNC("signal_handler_disconnect",
 		         obs_python_signal_handler_disconnect),
 		DEF_FUNC("signal_handler_connect",
@@ -694,8 +785,8 @@ static void add_hook_functions(PyObject *module)
 		         obs_python_signal_handler_disconnect_global),
 		DEF_FUNC("signal_handler_connect_global",
 		         obs_python_signal_handler_connect_global),
-		DEF_FUNC("signal_handler_remove_current",
-		         obs_python_signal_handler_remove_current),
+		DEF_FUNC("remove_current_callback",
+		         remove_current_callback),
 		DEF_FUNC("calldata_source", calldata_source),
 
 #undef DEF_FUNC
@@ -821,37 +912,67 @@ static void python_tick(void *param, float seconds)
 {
 	struct obs_python_script *data;
 	bool valid;
+	uint64_t ts = obs_get_video_frame_time();
 
 	pthread_mutex_lock(&tick_mutex);
 	valid = !!first_tick_script;
 	pthread_mutex_unlock(&tick_mutex);
 
-	if (!valid)
-		return;
+	/* --------------------------------- */
+	/* process script_tick calls         */
 
-	lock_python();
+	if (valid) {
+		lock_python();
 
-	PyObject *args = Py_BuildValue("(f)", seconds);
+		PyObject *args = Py_BuildValue("(f)", seconds);
 
-	pthread_mutex_lock(&tick_mutex);
-	data = first_tick_script;
-	while (data) {
-		cur_python_script = data;
+		pthread_mutex_lock(&tick_mutex);
+		data = first_tick_script;
+		while (data) {
+			cur_python_script = data;
 
-		PyObject *py_ret = PyObject_CallObject(data->tick, args);
-		Py_XDECREF(py_ret);
-		py_error();
+			PyObject *py_ret = PyObject_CallObject(data->tick, args);
+			Py_XDECREF(py_ret);
+			py_error();
 
-		data = data->next_tick;
+			data = data->next_tick;
+		}
+
+		cur_python_script = NULL;
+
+		pthread_mutex_unlock(&tick_mutex);
+
+		Py_XDECREF(args);
+
+		unlock_python();
 	}
 
-	cur_python_script = NULL;
+	/* --------------------------------- */
+	/* process timers                    */
 
-	pthread_mutex_unlock(&tick_mutex);
+	pthread_mutex_lock(&timer_mutex);
+	struct python_obs_timer *timer = first_timer;
+	while (timer) {
+		struct python_obs_timer *next = timer->next;
+		struct python_obs_callback *cb = python_obs_timer_cb(timer);
 
-	Py_XDECREF(args);
+		if (cb->base.removed) {
+			python_obs_timer_remove(timer);
+		} else {
+			uint64_t elapsed = ts - timer->last_ts;
 
-	unlock_python();
+			if (elapsed >= timer->interval) {
+				lock_python();
+				timer_call(&cb->base);
+				unlock_python();
+
+				timer->last_ts += timer->interval;
+			}
+		}
+
+		timer = next;
+	}
+	pthread_mutex_unlock(&timer_mutex);
 
 	UNUSED_PARAMETER(param);
 }
@@ -873,8 +994,17 @@ bool obs_scripting_python_loaded(void)
 void obs_python_load(void)
 {
 	da_init(python_paths);
+
+	pthread_mutexattr_t attr;
+	pthread_mutexattr_init(&attr);
+	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+
 	pthread_mutex_init(&tick_mutex, NULL);
+	pthread_mutex_init(&timer_mutex, &attr);
+
 }
+
+extern void add_python_frontend_funcs(PyObject *module);
 
 bool obs_scripting_load_python(const char *python_path)
 {
@@ -957,6 +1087,9 @@ bool obs_scripting_load_python(const char *python_path)
 	add_hook_functions(py_obspython);
 	py_error();
 
+	add_python_frontend_funcs(py_obspython);
+	py_error();
+
 out:
 	/* ---------------------------------------------- */
 	/* Free data                                      */
@@ -992,4 +1125,5 @@ void obs_python_unload(void)
 	da_free(python_paths);
 
 	pthread_mutex_destroy(&tick_mutex);
+	pthread_mutex_destroy(&timer_mutex);
 }

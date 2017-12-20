@@ -29,6 +29,8 @@
 #define call_func(func, args, rets) \
 	call_func_(script, cb->reg_idx, args, rets, #func, "frontend API")
 
+/* ----------------------------------- */
+
 static int source_list_free(lua_State *script)
 {
 	size_t count = lua_rawlen(script, 1);
@@ -196,6 +198,8 @@ static int set_current_profile(lua_State *script)
 	return 0;
 }
 
+/* ----------------------------------- */
+
 static void tools_menu_callback(void *priv)
 {
 	struct lua_obs_callback *cb = priv;
@@ -206,22 +210,38 @@ static void tools_menu_callback(void *priv)
 	unlock_script();
 }
 
+static void add_tools_menu_item_defer(void *p_cb)
+{
+	struct script_callback *cb = p_cb;
+	const char *name = calldata_string(&cb->extra, "name");
+	obs_frontend_add_tools_menu_item(name, tools_menu_callback, cb);
+}
+
 static int add_tools_menu_item(lua_State *script)
 {
-	if (!verify_args1(script, is_function))
+	const char *name = lua_tostring(script, 1);
+	if (!name || !*name)
+		return 0;
+	if (!is_function(script, 2))
 		return 0;
 
-	const char *name = lua_tostring(script, 1);
-
 	struct lua_obs_callback *cb = add_lua_obs_callback(script, 2);
-	obs_frontend_add_tools_menu_item(name, tools_menu_callback, cb);
+	calldata_set_string(&cb->base.extra, "name", name);
+	defer_call_post(add_tools_menu_item_defer, cb);
 	return 0;
 }
+
+/* ----------------------------------- */
 
 static void frontend_event_callback(enum obs_frontend_event event, void *priv)
 {
 	struct lua_obs_callback *cb = priv;
 	lua_State *script = cb->script;
+
+	if (cb->base.removed) {
+		obs_frontend_remove_event_callback(frontend_event_callback, cb);		
+		return;
+	}
 
 	lock_script(script);
 
@@ -238,10 +258,14 @@ static int remove_event_callback(lua_State *script)
 
 	struct lua_obs_callback *cb = find_lua_obs_callback(script, 1);
 	if (cb) {
-		obs_frontend_remove_event_callback(frontend_event_callback, cb);
 		remove_lua_obs_callback(cb);
 	}
 	return 0;
+}
+
+static void add_event_callback_defer(void *cb)
+{
+	obs_frontend_add_event_callback(frontend_event_callback, cb);
 }
 
 static int add_event_callback(lua_State *script)
@@ -250,15 +274,22 @@ static int add_event_callback(lua_State *script)
 		return 0;
 
 	struct lua_obs_callback *cb = add_lua_obs_callback(script, 1);
-	obs_frontend_add_event_callback(frontend_event_callback, cb);
+	defer_call_post(add_event_callback_defer, cb);
 	return 0;
 }
+
+/* ----------------------------------- */
 
 static void frontend_save_callback(obs_data_t *save_data, bool saving,
 		void *priv)
 {
 	struct lua_obs_callback *cb = priv;
 	lua_State *script = cb->script;
+
+	if (cb->base.removed) {
+		obs_frontend_remove_save_callback(frontend_save_callback, cb);
+		return;
+	}
 
 	lock_script(script);
 
@@ -276,10 +307,14 @@ static int remove_save_callback(lua_State *script)
 
 	struct lua_obs_callback *cb = find_lua_obs_callback(script, 1);
 	if (cb) {
-		obs_frontend_remove_save_callback(frontend_save_callback, cb);
 		remove_lua_obs_callback(cb);
 	}
 	return 0;
+}
+
+static void add_save_callback_defer(void *cb)
+{
+	obs_frontend_add_save_callback(frontend_save_callback, cb);
 }
 
 static int add_save_callback(lua_State *script)
@@ -288,9 +323,11 @@ static int add_save_callback(lua_State *script)
 		return 0;
 
 	struct lua_obs_callback *cb = add_lua_obs_callback(script, 1);
-	obs_frontend_add_save_callback(frontend_save_callback, cb);
+	defer_call_post(add_save_callback_defer, cb);
 	return 0;
 }
+
+/* ----------------------------------- */
 
 void add_lua_frontend_funcs(lua_State *script)
 {

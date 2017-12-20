@@ -36,7 +36,6 @@ struct script_callback {
 	obs_script_t *script;
 	calldata_t extra;
 
-	void (*on_remove)(void *p_cb);
 	bool removed;
 };
 
@@ -60,8 +59,6 @@ static inline void *add_script_callback(
 static inline void remove_script_callback(struct script_callback *cb)
 {
 	cb->removed = true;
-	if (cb->on_remove)
-		cb->on_remove(cb);
 
 	struct script_callback *next = cb->next;
 	if (next) next->p_prev_next = cb->p_prev_next;
