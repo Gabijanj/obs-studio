@@ -580,7 +580,7 @@ static int hook_error(lua_State *script)
 	if (!msg)
 		return 0;
 
-	script_warn(&data->base, "%s", msg);
+	script_error(&data->base, "%s", msg);
 	return 0;
 }
 

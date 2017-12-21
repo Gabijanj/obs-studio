@@ -49,3 +49,10 @@ void script_log(obs_script_t *script, int level, const char *format, ...)
 	script_log_va(script, level, format, args);
 	va_end(args);
 }
+
+void obs_scripting_set_log_callback(scripting_log_handler_t handler,
+		void *log_param)
+{
+	callback = handler;
+	param = log_param;
+}

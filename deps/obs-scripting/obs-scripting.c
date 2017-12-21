@@ -259,6 +259,11 @@ const char *obs_script_get_path(const obs_script_t *script)
 	return ptr_valid(script) ? script->path.array : "";
 }
 
+const char *obs_script_get_file(const obs_script_t *script)
+{
+	return ptr_valid(script) ? script->file.array : "";
+}
+
 bool obs_script_reload(obs_script_t *script)
 {
 	if (!scripting_loaded)

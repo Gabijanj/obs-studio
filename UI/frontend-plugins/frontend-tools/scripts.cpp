@@ -1,6 +1,13 @@
 #include "scripts.hpp"
 
 #include <QFileDialog>
+#include <QPlainTextEdit>
+#include <QVBoxLayout>
+#include <QScrollBar>
+#include <QFontDatabase>
+#include <QFont>
+#include <QDialogButtonBox>
+#include <QResizeEvent>
 
 #include <obs.hpp>
 #include <obs-module.h>
@@ -35,6 +42,93 @@ struct ScriptData {
 
 static ScriptData *scriptData = nullptr;
 static ScriptsTool *scriptsWindow = nullptr;
+static ScriptLogWindow *scriptLogWindow = nullptr;
+static QPlainTextEdit *scriptLogWidget = nullptr;
+
+/* ----------------------------------------------------------------- */
+
+ScriptLogWindow::ScriptLogWindow() : QWidget(nullptr)
+{
+	const QFont fixedFont =
+		QFontDatabase::systemFont(QFontDatabase::FixedFont);
+
+	QPlainTextEdit *edit = new QPlainTextEdit();
+	edit->setReadOnly(true);
+	edit->setFont(fixedFont);
+
+	QDialogButtonBox *buttonBox = new QDialogButtonBox(
+			QDialogButtonBox::Close);
+	connect(buttonBox, &QDialogButtonBox::rejected, this, &QWidget::hide);
+
+	QVBoxLayout *layout = new QVBoxLayout();
+	layout->addWidget(edit);
+	layout->addWidget(buttonBox);
+
+	setLayout(layout);
+	scriptLogWidget = edit;
+
+	resize(600, 400);
+
+	config_t *global_config = obs_frontend_get_global_config();
+	const char *geom = config_get_string(global_config,
+			"ScriptLogWindow", "geometry");
+	if (geom != nullptr) {
+		QByteArray ba = QByteArray::fromBase64(QByteArray(geom));
+		restoreGeometry(ba);
+	}
+
+	setWindowTitle(obs_module_text("ScriptLogWindow"));
+
+	connect(edit->verticalScrollBar(), &QAbstractSlider::sliderMoved,
+			this, &ScriptLogWindow::ScrollChanged);
+}
+
+ScriptLogWindow::~ScriptLogWindow()
+{
+	config_t *global_config = obs_frontend_get_global_config();
+	config_set_string(global_config,
+			"ScriptLogWindow", "geometry",
+			saveGeometry().toBase64().constData());
+}
+
+void ScriptLogWindow::ScrollChanged(int val)
+{
+	QScrollBar *scroll = scriptLogWidget->verticalScrollBar();
+	bottomScrolled = (val == scroll->maximum());
+}
+
+void ScriptLogWindow::resizeEvent(QResizeEvent *event)
+{
+	QWidget::resizeEvent(event);
+
+	if (bottomScrolled) {
+		QScrollBar *scroll = scriptLogWidget->verticalScrollBar();
+		scroll->setValue(scroll->maximum());
+	}
+}
+
+void ScriptLogWindow::AddLogMsg(int log_level, QString msg)
+{
+	QScrollBar *scroll = scriptLogWidget->verticalScrollBar();
+	bottomScrolled = scroll->value() == scroll->maximum();
+
+	lines += QStringLiteral("\n");
+	lines += msg;
+	scriptLogWidget->setPlainText(lines);
+
+	if (bottomScrolled)
+		scroll->setValue(scroll->maximum());
+
+	if (log_level <= LOG_WARNING) {
+		show();
+		raise();
+	}
+}
+
+void ScriptLogWindow::Clear()
+{
+	lines.clear();
+}
 
 /* ----------------------------------------------------------------- */
 
@@ -162,6 +256,12 @@ void ScriptsTool::on_reloadScripts_clicked()
 		ReloadScript(item->text().toUtf8().constData());
 }
 
+void ScriptsTool::on_scriptLog_clicked()
+{
+	scriptLogWindow->show();
+	scriptLogWindow->raise();
+}
+
 void ScriptsTool::on_addLuaDepPath_clicked()
 {
 }
@@ -204,9 +304,13 @@ static void obs_event(enum obs_frontend_event event, void *)
 {
 	if (event == OBS_FRONTEND_EVENT_EXIT) {
 		delete scriptsWindow;
+		delete scriptLogWindow;
 		delete scriptData;
 
 	} else if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP) {
+		scriptLogWindow->hide();
+		scriptLogWindow->Clear();
+
 		delete scriptData;
 		scriptData = new ScriptData;
 	}
@@ -255,12 +359,28 @@ static void save_script_data(obs_data_t *save_data, bool saving, void *)
 	}
 }
 
+static void script_log(void *, obs_script_t *script, int log_level,
+		const char *message)
+{
+	QString qmsg;
+	qmsg = QStringLiteral("[%1] %2").arg(
+			obs_script_get_file(script),
+			message);
+
+	QMetaObject::invokeMethod(scriptLogWindow, "AddLogMsg",
+			Q_ARG(int, log_level),
+			Q_ARG(QString, qmsg));
+}
+
 extern "C" void InitScripts()
 {
+	scriptLogWindow = new ScriptLogWindow();
+
 	config_t *config = obs_frontend_get_global_config();
 	const char *python_path = config_get_string(config, "Python", "Path");
 
 	obs_scripting_load();
+	obs_scripting_set_log_callback(script_log, nullptr);
 
 	if (!obs_scripting_python_loaded() && python_path && *python_path)
 		obs_scripting_load_python(python_path);

@@ -53,6 +53,7 @@ EXPORT obs_script_t *obs_script_create(const char *path);
 EXPORT void obs_script_destroy(obs_script_t *script);
 
 EXPORT const char *obs_script_get_path(const obs_script_t *script);
+EXPORT const char *obs_script_get_file(const obs_script_t *script);
 
 EXPORT bool obs_script_loaded(const obs_script_t *script);
 EXPORT bool obs_script_reload(obs_script_t *script);
