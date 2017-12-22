@@ -40,6 +40,8 @@ else()
 	string(REGEX REPLACE "_d" "" PYTHON_LIB "${PYTHON_LIB}")
 endif()
 
+set(ENABLE_SCRIPTING ON CACHE BOOL "" FORCE)
+
 if(UI_ENABLED)
 	set(EXTRA_LIBS obs-frontend-api)
 	include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/UI/obs-frontend-api")

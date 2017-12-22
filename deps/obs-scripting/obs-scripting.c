@@ -315,3 +315,21 @@ void obs_script_destroy(obs_script_t *script)
 	}
 #endif
 }
+
+#if !COMPILE_PYTHON
+bool obs_scripting_load_python(const char *python_path)
+{
+	UNUSED_PARAMETER(python_path);
+	return false;
+}
+
+bool obs_scripting_python_loaded(void)
+{
+	return false;
+}
+
+bool obs_scripting_python_runtime_linked(void)
+{
+	return (bool)true;
+}
+#endif

@@ -23,21 +23,37 @@ set(frontend-tools_HEADERS
 	auto-scene-switcher.hpp
 	output-timer.hpp
 	tool-helpers.hpp
-	scripts.hpp
 	)
 set(frontend-tools_SOURCES
 	${frontend-tools_SOURCES}
 	auto-scene-switcher.cpp
 	frontend-tools.c
 	output-timer.cpp
-	scripts.cpp
 	)
 set(frontend-tools_UI
 	${frontend-tools_UI}
 	forms/auto-scene-switcher.ui
 	forms/output-timer.ui
-	forms/scripts.ui
 	)
+
+if(ENABLE_SCRIPTING)
+	set(frontend-tools_HEADERS
+		${frontend-tools_HEADERS}
+		scripts.hpp
+		)
+	set(frontend-tools_SOURCES
+		${frontend-tools_SOURCES}
+		scripts.cpp
+		)
+	set(frontend-tools_UI
+		${frontend-tools_UI}
+		forms/scripts.ui
+		)
+	set(EXTRA_LIBS
+		${EXTRA_LIBS}
+		obs-scripting
+		)
+endif()
 
 if(WIN32)
 	set(frontend-tools_PLATFORM_SOURCES
@@ -84,8 +100,8 @@ add_library(frontend-tools MODULE
 	)
 target_link_libraries(frontend-tools
 	${frontend-tools_PLATFORM_LIBS}
+	${EXTRA_LIBS}
 	obs-frontend-api
-	obs-scripting
 	Qt5::Widgets
 	libobs)
 
