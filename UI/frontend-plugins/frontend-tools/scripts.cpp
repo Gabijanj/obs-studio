@@ -303,9 +303,9 @@ extern "C" void FreeScripts()
 static void obs_event(enum obs_frontend_event event, void *)
 {
 	if (event == OBS_FRONTEND_EVENT_EXIT) {
+		delete scriptData;
 		delete scriptsWindow;
 		delete scriptLogWindow;
-		delete scriptData;
 
 	} else if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP) {
 		scriptLogWindow->hide();
@@ -316,47 +316,51 @@ static void obs_event(enum obs_frontend_event event, void *)
 	}
 }
 
+static void load_script_data(obs_data_t *load_data, bool, void *)
+{
+	obs_data_array_t *array = obs_data_get_array(load_data,
+			"scripts-tool");
+
+	delete scriptData;
+	scriptData = new ScriptData;
+
+	size_t size = obs_data_array_count(array);
+	for (size_t i = 0; i < size; i++) {
+		obs_data_t *obj = obs_data_array_item(array, i);
+		const char *path = obs_data_get_string(obj, "path");
+
+		obs_script_t *script = obs_script_create(path);
+		if (script) {
+			scriptData->scripts.emplace_back(script);
+		}
+
+		obs_data_release(obj);
+	}
+
+	if (scriptsWindow)
+		scriptsWindow->RefreshLists();
+
+	obs_data_array_release(array);
+}
+
 static void save_script_data(obs_data_t *save_data, bool saving, void *)
 {
-	if (saving) {
-		obs_data_array_t *array = obs_data_array_create();
+	if (!saving)
+		return;
 
-		for (OBSScript &script : scriptData->scripts) {
-			const char *script_path = obs_script_get_path(script);
+	obs_data_array_t *array = obs_data_array_create();
 
-			obs_data_t *obj = obs_data_create();
-			obs_data_set_string(obj, "path", script_path);
-			obs_data_array_push_back(array, obj);
-			obs_data_release(obj);
-		}
+	for (OBSScript &script : scriptData->scripts) {
+		const char *script_path = obs_script_get_path(script);
 
-		obs_data_set_array(save_data, "scripts-tool", array);
-		obs_data_array_release(array);
-	} else {
-		obs_data_array_t *array = obs_data_get_array(save_data,
-				"scripts-tool");
-
-		delete scriptData;
-		scriptData = new ScriptData;
-
-		size_t size = obs_data_array_count(array);
-		for (size_t i = 0; i < size; i++) {
-			obs_data_t *obj = obs_data_array_item(array, i);
-			const char *path = obs_data_get_string(obj, "path");
-
-			obs_script_t *script = obs_script_create(path);
-			if (script) {
-				scriptData->scripts.emplace_back(script);
-			}
-
-			obs_data_release(obj);
-		}
-
-		if (scriptsWindow)
-			scriptsWindow->RefreshLists();
-
-		obs_data_array_release(array);
+		obs_data_t *obj = obs_data_create();
+		obs_data_set_string(obj, "path", script_path);
+		obs_data_array_push_back(array, obj);
+		obs_data_release(obj);
 	}
+
+	obs_data_set_array(save_data, "scripts-tool", array);
+	obs_data_array_release(array);
 }
 
 static void script_log(void *, obs_script_t *script, int log_level,
@@ -406,6 +410,7 @@ extern "C" void InitScripts()
 	};
 
 	obs_frontend_add_save_callback(save_script_data, nullptr);
+	obs_frontend_add_preload_callback(load_script_data, nullptr);
 	obs_frontend_add_event_callback(obs_event, nullptr);
 
 	action->connect(action, &QAction::triggered, cb);

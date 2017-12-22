@@ -49,6 +49,8 @@ static char *startup_script = NULL;
 static pthread_mutex_t tick_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct obs_lua_script *first_tick_script = NULL;
 
+pthread_mutex_t lua_source_def_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 /* ========================================================================= */
 
 static void add_hook_functions(lua_State *script);
@@ -768,6 +770,8 @@ obs_script_t *obs_lua_script_create(const char *path)
 	return (obs_script_t *)data;
 }
 
+extern void undef_lua_script_sources(struct obs_lua_script *data);
+
 void obs_lua_script_unload(obs_script_t *s)
 {
 	struct obs_lua_script *data = (struct obs_lua_script *)s;
@@ -776,6 +780,11 @@ void obs_lua_script_unload(obs_script_t *s)
 		return;
 
 	lua_State *script = data->script;
+
+	/* ---------------------------- */
+	/* undefine source types        */
+
+	undef_lua_script_sources(data);
 
 	/* ---------------------------- */
 	/* unhook tick function         */
@@ -849,6 +858,7 @@ void obs_lua_load(void)
 
 	pthread_mutex_init(&tick_mutex, NULL);
 	pthread_mutex_init(&timer_mutex, &attr);
+	pthread_mutex_init(&lua_source_def_mutex, NULL);
 
 	/* ---------------------------------------------- */
 	/* Initialize Lua plugin dep script paths         */
@@ -883,4 +893,5 @@ void obs_lua_unload(void)
 	bfree(startup_script);
 	pthread_mutex_destroy(&tick_mutex);
 	pthread_mutex_destroy(&timer_mutex);
+	pthread_mutex_destroy(&lua_source_def_mutex);
 }

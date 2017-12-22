@@ -56,6 +56,8 @@ struct obs_lua_script {
 	int tick;
 	struct obs_lua_script *next_tick;
 	struct obs_lua_script **p_prev_next_tick;
+
+	bool defined_sources;
 };
 
 static inline struct obs_lua_script *get_obs_script(lua_State *script)

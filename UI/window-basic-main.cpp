@@ -762,6 +762,10 @@ void OBSBasic::Load(const char *file)
 	ClearSceneData();
 	InitDefaultTransitions();
 
+	obs_data_t *modulesObj = obs_data_get_obj(data, "modules");
+	if (api)
+		api->on_preload(modulesObj);
+
 	obs_data_array_t *sceneOrder = obs_data_get_array(data, "scene_order");
 	obs_data_array_t *sources    = obs_data_get_array(data, "sources");
 	obs_data_array_t *transitions= obs_data_get_array(data, "transitions");
@@ -925,12 +929,10 @@ retryScene:
 
 	/* ---------------------- */
 
-	if (api) {
-		obs_data_t *modulesObj = obs_data_get_obj(data, "modules");
+	if (api)
 		api->on_load(modulesObj);
-		obs_data_release(modulesObj);
-	}
 
+	obs_data_release(modulesObj);
 	obs_data_release(data);
 
 	if (!opt_starting_scene.empty())
@@ -4039,6 +4041,9 @@ QMenu *OBSBasic::CreateAddSourcePopupMenu()
 	while (obs_enum_input_types(idx++, &type)) {
 		const char *name = obs_source_get_display_name(type);
 		uint32_t caps = obs_get_source_output_flags(type);
+
+		if ((caps & OBS_SOURCE_CAP_DISABLED) != 0)
+			continue;
 
 		if ((caps & OBS_SOURCE_DEPRECATED) == 0) {
 			addSource(popup, type, name);

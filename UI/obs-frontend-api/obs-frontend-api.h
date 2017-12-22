@@ -122,6 +122,11 @@ EXPORT void obs_frontend_add_save_callback(obs_frontend_save_cb callback,
 EXPORT void obs_frontend_remove_save_callback(obs_frontend_save_cb callback,
 		void *private_data);
 
+EXPORT void obs_frontend_add_preload_callback(obs_frontend_save_cb callback,
+		void *private_data);
+EXPORT void obs_frontend_remove_preload_callback(obs_frontend_save_cb callback,
+		void *private_data);
+
 typedef bool (*obs_frontend_translate_ui_cb)(const char *text,
 		const char **out);
 
