@@ -39,10 +39,10 @@ require \"obslua\"\n\
 package.path = package.path .. \"%s\"\n";
 
 static const char *get_script_path_func = "\
-function get_script_path()\n\
+function script_path()\n\
 	 return \"%s\"\n\
 end\n\
-package.path = package.path .. \";\" .. get_script_path() .. \"/?.lua\"\n";
+package.path = package.path .. \";\" .. script_path() .. \"/?.lua\"\n";
 
 static char *startup_script = NULL;
 

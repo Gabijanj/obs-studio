@@ -206,7 +206,7 @@ static bool load_python_script(struct obs_python_script *data)
 		goto fail;
 
 	static PyMethodDef global_funcs[] = {
-		{"get_script_path",
+		{"script_path",
 		 py_get_current_script_path,
 		 METH_NOARGS,
 		 "Gets the script path"},
